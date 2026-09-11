@@ -34,6 +34,7 @@ PLATFORM_TESTS = frozenset(
         "test_audit_run.AuditRunTests.test_concurrent_report_publications_leave_pointer_and_convenience_copies_consistent",
         "test_audit_run.AuditRunTests.test_report_lock_does_not_silently_disable_on_windows",
         "test_audit_run.AuditRunTests.test_report_lock_is_cross_process",
+        "test_domain_shards.DomainShardsConcurrencyTests.test_concurrent_shard_writes_and_merges_stay_consistent",
         "test_runtime.RuntimeTests.test_ledger_does_not_silently_disable_locking",
         "test_runtime.RuntimeTests.test_multiprocess_ledger_writes_are_serialized_and_durable",
     }
@@ -53,6 +54,7 @@ FAST_MODULES = (
 CONTROLLER_MODULES = (
     "test_audit_run",
     "test_codex_model_profile",
+    "test_domain_shards",
     "test_hardening",
     "test_lifecycle",
     "test_observability",
@@ -95,6 +97,7 @@ CONTROLLER_REPORTING_PUBLICATION_NAMES = frozenset(
 )
 CONTROLLER_LIFECYCLE_MODULES = (
     "test_codex_model_profile",
+    "test_domain_shards",
     "test_lifecycle",
     "test_observability",
     "test_poc_verification",
