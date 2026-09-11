@@ -18,8 +18,8 @@ Clone the suite and run the installer with your agent's name (`zcode` or
 `codex`):
 
 ```bash
-git clone https://github.com/iavl/evm-audit-skills-standalone
-cd evm-audit-skills-standalone
+git clone https://github.com/iavl/evm-audit-skills
+cd evm-audit-skills
 ./install.sh zcode
 ```
 
@@ -57,9 +57,10 @@ phases, with two provider vocabularies. Codex default:
 | Final Report | Terra · Medium |
 
 ZCode default: controller phases (Project Analysis, Domain Resolution, Final
-Report) run on the main agent (GLM-5.3); Domain Context runs on
-`evm-audit-worker-flash` (GLM-5.3-Flash); Initial Review, Deep Audit, and
-Vulnerability Validation run on `evm-audit-worker-deep` (GLM-5.3).
+Report) run on the main agent (GLM-5.3, handoff recommendations only); Domain
+Context runs on `evm-audit-worker-flash` (GLM-5.3-Flash); Initial Review and
+Deep Audit run on `evm-audit-worker-deep` (GLM-5.3, high); Vulnerability
+Validation runs on `evm-audit-worker-proof` (GLM-5.3, max).
 
 Use the defaults unless you explicitly customize the profile. It is confirmed
 once at audit startup. See the
@@ -67,10 +68,14 @@ once at audit startup. See the
 
 ## Parallel Orchestration
 
-On ZCode, the Master Skill can fan the middle of the pipeline out to one
-worker agent per Domain (custom agent types pinned to the models above),
-with a controller-owned merge barrier and confirmed-only fan-in. On Codex
-the same workflow runs sequentially in one session — the runtime provides no
+On ZCode, the Master Skill fans the middle of the pipeline out to one worker
+agent per Domain per stage — four stage-aligned waves (Domain Context on the
+flash worker, Initial Review and Deep Audit on the deep worker, Proof on the
+proof worker) with controller-owned merge barriers and confirmed-only
+fan-in. The worker agent definitions are installed by
+`./install.sh zcode` (a new ZCode session is required for them to register);
+the audit itself never modifies your agent configuration. On Codex the same
+workflow runs sequentially in one session — the runtime provides no
 sub-agent dispatch, and no parallelism is simulated. Either way the evidence
 gates are identical. See
 [Sequential and orchestrated execution](docs/audit-workflow.md).

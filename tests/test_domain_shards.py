@@ -81,7 +81,12 @@ class DomainShardsTests(unittest.TestCase):
 
             status = _run_cli("scripts/domain_shards.py", "status", "--run-dir", str(run_dir))
             self.assertEqual(status.returncode, 0, status.stderr)
-            self.assertTrue(json.loads(status.stdout)["merge_ready"])
+            status_payload = json.loads(status.stdout)
+            self.assertTrue(status_payload["context_merge_ready"])
+            self.assertFalse(
+                status_payload["merge_ready"],
+                "screen readiness requires the authoritative domain-context artifact",
+            )
 
             merged = _run_cli("scripts/domain_shards.py", "merge", "--run-dir", str(run_dir))
             self.assertEqual(merged.returncode, 0, merged.stderr)
@@ -102,6 +107,66 @@ class DomainShardsTests(unittest.TestCase):
             self.assertEqual(again.returncode, 0, again.stderr)
             self.assertFalse(json.loads(again.stdout)["screen_results_replaced"])
             self.assertEqual(load_json(run_dir / "reviews/screen-results.json"), global_screen)
+
+    def test_stage_merges_are_staged_idempotent_and_gated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = _make_run(directory)
+
+            # merge-screen without an authoritative context file must fail
+            # without writing any global artifact.
+            early = _run_cli("scripts/domain_shards.py", "merge-screen", "--run-dir", str(run_dir))
+            self.assertNotEqual(early.returncode, 0)
+            self.assertIn("run merge-context first", early.stderr)
+            self.assertFalse((run_dir / "reviews/screen-results.json").exists())
+
+            _write_shards(run_dir, manifest, directory)
+
+            # Context merge writes only the authoritative context artifact.
+            context = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertEqual(context.returncode, 0, context.stderr)
+            context_payload = json.loads(context.stdout)
+            self.assertEqual(context_payload["context_shard_domains"], sorted(DOMAINS))
+            self.assertTrue((run_dir / "reviews/domain-context.json").exists())
+            self.assertFalse((run_dir / "reviews/screen-results.json").exists())
+            self.assertNotIn("review_snapshot_id", context_payload)
+
+            # Screen merge requires the authoritative context, then derives
+            # the review snapshot after both artifacts are valid.
+            screen = _run_cli("scripts/domain_shards.py", "merge-screen", "--run-dir", str(run_dir))
+            self.assertEqual(screen.returncode, 0, screen.stderr)
+            screen_payload = json.loads(screen.stdout)
+            self.assertEqual(screen_payload["candidate_count"], manifest["selected_count"])
+            self.assertEqual(len(screen_payload["review_snapshot_id"]), 64)
+            self.assertTrue((run_dir / "reviews/screen-results.json").exists())
+
+            # Both stage merges are idempotent.
+            for command in ("merge-context", "merge-screen"):
+                repeat = _run_cli("scripts/domain_shards.py", command, "--run-dir", str(run_dir))
+                self.assertEqual(repeat.returncode, 0, repeat.stderr)
+                payload = json.loads(repeat.stdout)
+                replaced_key = "domain_context_replaced" if command == "merge-context" else "screen_results_replaced"
+                self.assertFalse(payload[replaced_key])
+
+    def test_failed_stage_merge_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = _make_run(directory)
+            _write_shards(run_dir, manifest, directory, skip_screen=DOMAINS[1])
+            context = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertEqual(context.returncode, 0, context.stderr)
+            missing = _run_cli("scripts/domain_shards.py", "merge-screen", "--run-dir", str(run_dir))
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn(f"missing screen shard for Domain '{DOMAINS[1]}'", missing.stderr)
+            self.assertFalse((run_dir / "reviews/screen-results.json").exists())
+
+            # A later failure must not overwrite an existing valid artifact.
+            authoritative = load_json(run_dir / "reviews/domain-context.json")
+            shard_path = run_dir / f"reviews/shards/context-{DOMAINS[0]}.json"
+            shard_path.write_text("{ not json", encoding="utf-8")
+            failed = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(load_json(run_dir / "reviews/domain-context.json"), authoritative)
 
     def test_screen_shard_rejects_foreign_and_missing_checks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -228,8 +293,65 @@ class DomainShardsTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(result.stdout)
             self.assertFalse(payload["merge_ready"])
+            self.assertFalse(payload["context_merge_ready"])
+            self.assertFalse(payload["screen_merge_ready"])
             self.assertEqual(payload["missing_screen_shards"], sorted(DOMAINS))
             self.assertEqual(payload["missing_context_shards"], sorted(DOMAINS))
+
+    def test_status_never_reports_invalid_shards_as_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = _make_run(directory)
+            _write_shards(run_dir, manifest, directory)
+
+            def status() -> dict[str, Any]:
+                result = _run_cli("scripts/domain_shards.py", "status", "--run-dir", str(run_dir))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+
+            payload = status()
+            self.assertTrue(payload["context_merge_ready"])
+            self.assertFalse(payload["screen_merge_ready"], "screen merge needs authoritative context first")
+
+            # Stale routing snapshot: present but invalid must not be ready.
+            shard_path = run_dir / f"reviews/shards/screen-{DOMAINS[0]}.json"
+            shard = load_json(shard_path)
+            shard["routing_snapshot_id"] = "0" * 64
+            shard_path.write_text(json.dumps(shard) + "\n", encoding="utf-8")
+            payload = status()
+            self.assertFalse(payload["merge_ready"])
+            self.assertIn(DOMAINS[0], payload["invalid_screen_shards"])
+            diagnostic = next(e for e in payload["screen_shards"] if e["owner_domain"] == DOMAINS[0])
+            self.assertFalse(diagnostic["valid"])
+            self.assertIn("different routing snapshot", diagnostic["error"])
+
+            # Malformed JSON: diagnosed, never crashes the command.
+            shard_path.write_text("{ not json", encoding="utf-8")
+            payload = status()
+            self.assertFalse(payload["merge_ready"])
+            self.assertIn(DOMAINS[0], payload["invalid_screen_shards"])
+
+            # Wrong owner: present but invalid.
+            shard_path.write_text(json.dumps({**shard, "routing_snapshot_id": manifest["routing_snapshot_id"], "owner_domain": DOMAINS[1]}) + "\n", encoding="utf-8")
+            payload = status()
+            self.assertFalse(payload["merge_ready"])
+
+            # Restore validity; incomplete exact coverage (missing checks).
+            _write_shards(run_dir, manifest, directory)
+            shard = load_json(shard_path)
+            shard["results"] = shard["results"][1:]
+            shard_path.write_text(json.dumps(shard) + "\n", encoding="utf-8")
+            payload = status()
+            self.assertFalse(payload["merge_ready"])
+            self.assertIn(DOMAINS[0], payload["invalid_screen_shards"])
+
+            # Fully valid shards plus authoritative context make screen ready.
+            _write_shards(run_dir, manifest, directory)
+            _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            payload = status()
+            self.assertTrue(payload["context_merge_ready"])
+            self.assertTrue(payload["screen_merge_ready"])
+            self.assertTrue(payload["merge_ready"])
 
 
 def _concurrent_worker(directory: str, run_dir: str, domain: str, mode: str) -> None:
@@ -247,13 +369,18 @@ def _concurrent_worker(directory: str, run_dir: str, domain: str, mode: str) -> 
 
 
 class DomainShardsConcurrencyTests(unittest.TestCase):
-    def test_concurrent_shard_writes_and_merges_stay_consistent(self) -> None:
+    def test_parallel_shard_writes_then_concurrent_merge_attempts_stay_consistent(self) -> None:
+        """Parallel per-Domain writes, worker quiescence, then serialized merges.
+
+        The supported orchestration never merges while workers are still
+        writing; this test exercises exactly that ordering.
+        """
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             run_dir, manifest = _make_run(directory)
             _, context_inputs = _worker_inputs(manifest)
-            # One context shard per domain, written up front; screen shards are
-            # written by four concurrent workers (two per domain).
+            # One context shard per domain, written up front; screen shards
+            # are written by one parallel worker per owner Domain.
             for domain, context in context_inputs.items():
                 source = directory / f"context-{domain}.json"
                 source.write_text(json.dumps({"context": context}) + "\n", encoding="utf-8")
@@ -262,7 +389,7 @@ class DomainShardsConcurrencyTests(unittest.TestCase):
             context = multiprocessing.get_context("spawn")
             workers = [
                 context.Process(target=_concurrent_worker, args=(str(directory), str(run_dir), domain, "screen"))
-                for domain in DOMAINS * 2
+                for domain in DOMAINS
             ]
             for worker in workers:
                 worker.start()
@@ -286,6 +413,30 @@ class DomainShardsConcurrencyTests(unittest.TestCase):
 
             validate_schema(ROOT, "screen-results.schema.json", global_screen)
             validate_schema(ROOT, "domain-context.schema.json", load_json(run_dir / "reviews/domain-context.json"))
+
+    def test_duplicate_same_domain_shard_writes_are_atomic(self) -> None:
+        """Concurrent rewrites of one Domain's shard never leave torn output.
+
+        Duplicate same-Domain writers are not part of normal orchestration;
+        this pins the atomic-write property that makes shard re-authoring
+        safe. Normal dispatch uses exactly one worker per Domain.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = _make_run(directory)
+            context = multiprocessing.get_context("spawn")
+            workers = [
+                context.Process(target=_concurrent_worker, args=(str(directory), str(run_dir), DOMAINS[0], "screen"))
+                for _ in range(4)
+            ]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=120)
+                self.assertEqual(worker.exitcode, 0)
+            shard = load_json(run_dir / f"reviews/shards/screen-{DOMAINS[0]}.json")
+            expected = {entry["canonical_id"] for entry in _worker_inputs(manifest)[0][DOMAINS[0]]}
+            self.assertEqual({entry["canonical_id"] for entry in shard["results"]}, expected)
 
 
 if __name__ == "__main__":

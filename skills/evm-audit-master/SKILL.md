@@ -131,8 +131,9 @@ banner from the returned stage fields.
   Phase: <step>/<total>
   <summary>
   Model: <model>
-  Reasoning: <reasoning_effort>
-  Worker agent: <agent>          (zcode fan-out stages only)
+  Reasoning: <reasoning_effort>     (codex)
+  Thought level: <thought_level>    (zcode)
+  Worker agent: <agent>             (zcode fan-out stages only)
 ```
 
 Use only controller-provided phase and counts; never infer them from stderr.
@@ -166,10 +167,15 @@ Use this default profile?
 
 ZCode default (`--provider zcode`): controller stages (Project Analysis,
 Domain Resolution, Final Report) run on the main agent (`GLM-5.3`, agent
-`null`); Domain Context runs on `evm-audit-worker-flash` (GLM-5.3-Flash);
-Initial Review, Deep Audit, and Vulnerability Validation run on
-`evm-audit-worker-deep` (GLM-5.3). Initial Review deliberately uses the
-flagship model: `NOT_APPLICABLE_CONFIRMED` is a trusted-absence decision.
+`null`, handoff recommendations only); Domain Context runs on
+`evm-audit-worker-flash` (GLM-5.3-Flash, thought level unpinned/default);
+Initial Review and Deep Audit run on `evm-audit-worker-deep` (GLM-5.3,
+`thoughtLevel: high`); Vulnerability Validation runs on
+`evm-audit-worker-proof` (GLM-5.3, `thoughtLevel: max`). Initial Review
+deliberately uses the flagship model: `NOT_APPLICABLE_CONFIRMED` is a
+trusted-absence decision. Each worker agent type pins exactly one
+model/thought-level contract; a worker invocation never crosses a stage
+boundary into a different contract.
 
 The user-level default lives at `~/.codex/evm-audit-model-profile.json` or
 `~/.zcode/evm-audit-model-profile.json` (one per provider);
@@ -182,8 +188,11 @@ Persist the resolved choice in `<run-dir>/config/codex-model-profile.json`;
 once present, do not ask again. For customization, show the full current
 profile once and accept only changed lines such as `SCREEN = gpt-5.6-sol/high`
 (codex) or `SCREEN = GLM-5.3/high/evm-audit-worker-deep` (zcode), preserving
-omitted internal stages. A zcode stage entry must keep its `model` consistent
-with the pinned model of its `agent`; the validator rejects mismatches.
+omitted internal stages. A zcode stage entry must match the full execution
+contract of its `agent` — model and thought level as pinned in the shipped
+worker template, and a stage the agent is allowed to execute; the validator
+rejects any mismatch. GLM-5.3 thought levels are `low`, `high`, and `max`;
+GLM-5.3-Flash uses `default` (no verified explicit level).
 
 At each transition, follow `recommended_execution`. This is a handoff only:
 the controller never switches its own active model. On Codex the stage model
@@ -196,58 +205,78 @@ artifact identity.
 ## Orchestration (main agent + Domain workers)
 
 The pipeline is fan-out/fan-in: the main agent (controller) owns Project
-Analysis, Domain Resolution, the shard merge barrier, report publication, and
-every `next`/`status`/`verify-poc` call. Per-Domain worker agents own their
-Domain's context, screen triage, deep review, and proof records. Controller
-discipline: never run `next`, `status`, `report`, or `verify-poc` while
-workers are active.
+Analysis, Domain Resolution, the stage merge barriers, report publication,
+and every `next`/`status`/`verify-poc` call. Per-Domain worker agents own
+exactly one stage of work per invocation. Controller discipline: never run
+`next`, `status`, `report`, `verify-poc`, or a merge while workers are
+active, and never dispatch a worker for a later stage before the current
+stage is terminal.
 
 Execution modes:
 
 - **ZCode with worker agent types** (parallel): requires the custom agent
-  types `evm-audit-worker-deep` and `evm-audit-worker-flash` in the Agent
-  tool's available types. If either is missing, copy the templates from
-  `<suite-root>/skills/evm-audit-master/agents/` into `~/.zcode/agents/`,
-  tell the user to restart the session (custom agent types register at
-  session start), and stop this run — do not spawn workers as a wrong type.
-  Dispatch one worker per Domain with the agent type named by the stage
-  profile (`recommended_execution.agent`) as parallel background agents; act
-  on completion notifications, do not poll.
+  types `evm-audit-worker-flash`, `evm-audit-worker-deep`, and
+  `evm-audit-worker-proof` in the Agent tool's available types. If any is
+  missing, stop and fail closed with:
+
+  ```text
+  Required ZCode worker agents are not registered.
+  Run `<suite-root>/install.sh zcode`, then start a new ZCode session.
+  Do not continue this audit with a fallback/wrong agent type.
+  ```
+
+  Never copy agent files into `~/.zcode/agents/` during an audit;
+  installation is `install.sh`'s job, and a new session is required for the
+  definitions to register. Dispatch one worker per Domain with the agent
+  type named by the stage profile (`recommended_execution.agent`) as
+  parallel background agents; act on completion notifications, do not poll.
 - **Codex or runtimes without sub-agent dispatch** (sequential): the main
-  agent executes the same worker workflow inline, Domain by Domain. Do not
-  fabricate parallel dispatch where the runtime provides no mechanism.
+  agent executes the same stage-aligned workflow inline, stage by stage,
+  Domain by Domain. Do not fabricate parallel dispatch where the runtime
+  provides no mechanism.
 
-Waves:
+Waves (a worker invocation never crosses a stage boundary — each agent type
+pins one model/thought-level contract):
 
-1. **Wave 1 — context + screen shards.** After Domain Resolution is terminal,
-   dispatch one worker per Domain (or iterate inline). Each worker:
-   - reads its Domain's checklist view (generated per-owner runtime views);
-   - authors a screen input `{"results": [...]}` covering exactly its
-     Domain's selected checks (`CANDIDATE` or `NOT_APPLICABLE_CONFIRMED` with
-     trusted-absence evidence) and writes it with
-     `python3 <suite-root>/scripts/domain_shards.py write-screen-shard --run-dir <run-dir> --domain <domain> --input <file>`;
-   - authors a context input `{"context": {...}}` covering exactly its
-     Domain's required context keys (every entry `KNOWN` or
-     `NOT_APPLICABLE`, never left `UNKNOWN`) and writes it with
-     `write-context-shard` (same CLI shape).
-2. **Merge barrier (controller only).** Run
-   `python3 <suite-root>/scripts/domain_shards.py merge --run-dir <run-dir>`.
-   The merge validates exact check coverage across shards, rejects stale or
-   foreign shards, replaces only generated templates (pass `--force` only
-   with the user's explicit consent to discard hand edits), and derives the
-   review snapshot. Only after a successful merge may deep review start.
-3. **Wave 2 — deep review + proof ledgers.** Dispatch one worker per Domain
-   again. Each worker appends records only to its own ledger
+1. **Controller head.** `init` (Project Analysis), then `next` until Domain
+   Resolution is terminal.
+2. **Wave A — DOMAIN_CONTEXT** (`evm-audit-worker-flash`, one per Domain).
+   Each worker authors a context input `{"context": {...}}` covering exactly
+   its Domain's required context keys (every entry `KNOWN` or
+   `NOT_APPLICABLE`, never left `UNKNOWN`) and writes it with
+   `python3 <suite-root>/scripts/domain_shards.py write-context-shard --run-dir <run-dir> --domain <domain> --input <file>`.
+3. **Barrier A (controller only).** `domain_shards.py merge-context --run-dir <run-dir>`
+   writes the authoritative `reviews/domain-context.json`. Screen may start
+   only after this succeeds. (`domain_shards.py status` reports
+   `context_merge_ready`; a present-but-invalid shard is never ready.)
+4. **Wave B — SCREEN** (`evm-audit-worker-deep`, one per Domain). Each
+   worker authors a screen input `{"results": [...]}` covering exactly its
+   Domain's selected checks (`CANDIDATE` or `NOT_APPLICABLE_CONFIRMED` with
+   trusted-absence evidence) and writes it with `write-screen-shard` (same
+   CLI shape).
+5. **Barrier B (controller only).** `domain_shards.py merge-screen --run-dir <run-dir>`
+   requires the authoritative context, writes `reviews/screen-results.json`,
+   and derives the review snapshot. Deep review may start only after this
+   succeeds. (`merge-context` followed by `merge-screen` equals the combined
+   `merge` convenience command.)
+6. **Wave C — DEEP_REVIEW** (`evm-audit-worker-deep`, one per Domain). Each
+   worker appends only `DEEP_REVIEW` records to its own ledger
    `<run-dir>/reviews/review-<domain>.jsonl` via
    `python3 <suite-root>/scripts/review_ledger.py --manifest <run-dir>/routing/manifest.json --screen-results <run-dir>/reviews/screen-results.json --domain-context <run-dir>/reviews/domain-context.json --ledger <run-dir>/reviews/review-<domain>.jsonl --append-record <record.json>`
    (add `--domain-resolution <run-dir>/reviews/domain-resolution.json` when
    Deferred Domains exist). Append-only, one record at a time; the ledger
    validates revisions, lifecycle transitions, and snapshot binding.
-4. **Fan-in (controller only).** When all workers have quiesced, run `next`
-   to confirm coverage, then `report`.
+7. **Wave D — PROOF** (`evm-audit-worker-proof`, one per Domain with
+   SUSPICIOUS records). Same ledger CLI as wave C, but appending only
+   `PROOF` records that resolve prior SUSPICIOUS records against the
+   current review snapshot.
+8. **Controller tail.** When all workers have quiesced, run `next` to
+   confirm coverage, then `report`.
 
-Worker hard rules (enforced by the agent templates and re-validated by the
-CLI): workers write only their own shards and their own ledger; they never
+Parallelism is across Domains within a stage; stage ordering stays
+deterministic. Worker hard rules (enforced by the agent templates and
+re-validated by the CLI): workers write only the one artifact their stage
+allows (their context shard, their screen shard, or their own ledger), never
 edit global run files, never rerun Recon/Routing/Selector, never turn
 `UNKNOWN` into trusted absence, and never assign severity to `SUSPICIOUS`.
 

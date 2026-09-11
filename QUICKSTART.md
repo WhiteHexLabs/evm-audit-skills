@@ -6,8 +6,8 @@ Clone the suite and run the installer with your agent's name (`zcode` or
 `codex`):
 
 ```bash
-git clone https://github.com/iavl/evm-audit-skills-standalone
-cd evm-audit-skills-standalone
+git clone https://github.com/iavl/evm-audit-skills
+cd evm-audit-skills
 ./install.sh zcode
 ```
 
@@ -25,10 +25,11 @@ Audit this Solidity repository with evm-audit-master: /path/to/project
 ```
 
 On ZCode the master skill may fan Domain work out to parallel worker agents
-(`evm-audit-worker-deep` / `evm-audit-worker-flash`, auto-installed from the
-suite on first use; a session restart is required to register them). On Codex
-the same audit runs sequentially in one session. The evidence gates are
-identical in both modes.
+(`evm-audit-worker-flash` / `evm-audit-worker-deep` / `evm-audit-worker-proof`,
+installed into `~/.zcode/agents/` by `./install.sh zcode`; a new ZCode
+session is required for the definitions to register). On Codex the same
+audit runs sequentially in one session. The evidence gates are identical in
+both modes.
 
 ## 3. Read the artifacts
 

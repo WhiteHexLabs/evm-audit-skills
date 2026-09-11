@@ -17,33 +17,50 @@ Initial Review results, and rendered runtime file without rerunning routing.
 
 ### Parallel orchestration (main agent + Domain workers)
 
-The middle of the pipeline fans out by Domain; the head and tail stay
-central. The main agent (controller) runs Project Analysis, completes Domain
-Resolution, drives `next`/`status`, merges worker shards, runs `verify-poc`,
-and publishes reports. Per-Domain worker agents author their Domain's
-context/screen shards and append their Domain's review ledger. Two waves with
-one barrier:
+The middle of the pipeline fans out by Domain within each stage; the head,
+tail, and stage barriers stay central. The main agent (controller) runs
+Project Analysis, completes Domain Resolution, drives `next`/`status`, runs
+the stage merges, runs `verify-poc`, and publishes reports. Per-Domain
+worker agents author exactly one stage of work per invocation — a worker
+never crosses a stage boundary, because each custom agent type pins one
+model/thought-level contract. Four stage-aligned waves with two barriers:
 
 ```text
 controller: init → next → Domain Resolution terminal
-wave 1:     per-Domain workers write context + screen shards   (parallel)
-barrier:    domain_shards.py merge → review snapshot derived   (controller)
-wave 2:     per-Domain workers append DEEP_REVIEW/PROOF records (parallel)
+wave A:     per-Domain workers write context shards            (parallel)
+barrier A:  domain_shards.py merge-context → authoritative
+            reviews/domain-context.json (no snapshot yet)
+wave B:     per-Domain workers write screen shards             (parallel)
+barrier B:  domain_shards.py merge-screen → authoritative
+            reviews/screen-results.json + review snapshot derived
+wave C:     per-Domain workers append DEEP_REVIEW records      (parallel)
+wave D:     per-Domain workers append PROOF records            (parallel)
 controller: next → report
 ```
 
-The barrier exists because deep inputs bind to one review snapshot derived
-from the complete global `screen-results.json` and `domain-context.json`.
-Shards bind to the `routing_snapshot_id`; a stale or foreign shard is
-rejected at write time and again at merge. The merge requires exact check
-coverage across shards (no missing Domain, no duplicate canonical ID),
-replaces only generated templates unless `--force` is passed explicitly, and
-runs under an exclusive cross-process lock. Review ledgers are per-owner
-files with their own writer lock, so wave-2 workers never contend with each
-other. Workers never write shared global artifacts; the controller must not
-run `next`, `status`, `report`, or `verify-poc` while workers are active.
-Dispatch mechanics (ZCode custom worker agent types, Codex sequential
-fallback) are specified in the Master Skill's Orchestration section.
+The barriers exist because deep inputs bind to one review snapshot derived
+from the complete global `screen-results.json` and `domain-context.json`;
+screen work also needs the authoritative context before it starts. Shards
+bind to the `routing_snapshot_id`; a stale or foreign shard is rejected at
+write time and again at merge. Each merge requires exact check coverage
+across shards (no missing Domain, no duplicate canonical ID), replaces only
+generated templates unless `--force` is passed explicitly, and runs under an
+exclusive cross-process lock; a failed merge writes nothing. `merge-context`
+does not derive the snapshot; `merge-screen` requires the authoritative
+context and derives the snapshot after both artifacts are valid. The
+combined `merge` command is a convenience that performs both merges and
+commits them together. Review ledgers are per-owner files with their own
+writer lock, so wave C/D workers never contend with each other. Workers
+never write shared global artifacts; the controller must not run `next`,
+`status`, `report`, `verify-poc`, or a merge while workers are active, and
+never dispatches a worker for a later stage before the current stage is
+terminal. Parallelism is across Domains within a stage; stage ordering stays
+deterministic. Dispatch mechanics (ZCode custom worker agent types, Codex
+sequential fallback) are specified in the Master Skill's Orchestration
+section; `domain_shards.py status` validates every present shard with the
+same contract as merge and reports `context_merge_ready` /
+`screen_merge_ready` / `merge_ready`, so a present-but-invalid shard is
+never reported as ready.
 
 Automatic build-root discovery is bounded to the acquisition root. Use
 `--acquisition-root` for a trusted source boundary or pass `--build-root`
@@ -122,10 +139,12 @@ severity.
 
 The stage execution policy is stored separately from audit artifacts at
 `<run-dir>/config/codex-model-profile.json`. It supports `provider: codex`
-and `provider: zcode` (zcode stages additionally name a worker agent type).
-Confirm it once in the Master Skill, then persist either the canonical
-profile or a validated custom profile. New runs use the user-level default
-for the chosen provider (`~/.codex/evm-audit-model-profile.json` or
+(reasoning efforts) and `provider: zcode` (model-specific thinking levels —
+GLM-5.3 `low/high/max`, GLM-5.3-Flash `default`/unpinned — plus a worker
+agent type per fan-out stage). Confirm it once in the Master Skill, then
+persist either the canonical profile or a validated custom profile. New
+runs use the user-level default for the chosen provider
+(`~/.codex/evm-audit-model-profile.json` or
 `~/.zcode/evm-audit-model-profile.json`) when it exists:
 
 ```bash
@@ -144,11 +163,14 @@ already uses. Profiles with older schema versions are rejected; see the
 [model profile documentation](codex-model-profile.md).
 
 `next` and `status` expose `recommended_execution` for the next phase, and
-stderr gives the same compact model handoff (plus the worker agent name on
-zcode fan-out stages). The controller does not switch the active model of the
-session it runs in. An absent profile on an older run resolves to the
-canonical default in memory and does not change audit state. The global file
-is read only during `init`; the run-scoped copy wins afterward.
+stderr gives the same compact model handoff (thought level and worker agent
+name on zcode fan-out stages). The controller does not switch the active
+model or thought level of the session it runs in; zcode controller-stage
+entries are handoff recommendations for the main session, while worker
+stages run on their configured custom agent types. An absent profile on an
+older run resolves to the canonical default in memory and does not change
+audit state. The global file is read only during `init`; the run-scoped
+copy wins afterward.
 
 Project Analysis, routing, validation, hashing, and report admission remain
 deterministic controller logic; the recommendation applies only to model judgment.
@@ -283,8 +305,8 @@ reusing a cached view. Filtered IDs remain in the
 manifest and do not generate per-check Markdown records. Completion comes from
 `validate_audit_run.py` rather than an upstream completion flag.
 
-Per-Domain shards for orchestrated parallel audits are written and merged
-with `scripts/domain_shards.py` (see Parallel orchestration above):
+Per-Domain shards for orchestrated parallel audits are written, merged, and
+diagnosed with `scripts/domain_shards.py` (see Parallel orchestration above):
 
 ```bash
 python3 scripts/domain_shards.py write-context-shard --run-dir <run-dir> \
@@ -292,14 +314,20 @@ python3 scripts/domain_shards.py write-context-shard --run-dir <run-dir> \
 python3 scripts/domain_shards.py write-screen-shard --run-dir <run-dir> \
   --domain <owner-domain> --input screen.json
 python3 scripts/domain_shards.py status --run-dir <run-dir>
+python3 scripts/domain_shards.py merge-context --run-dir <run-dir>
+python3 scripts/domain_shards.py merge-screen --run-dir <run-dir>
 python3 scripts/domain_shards.py merge --run-dir <run-dir>
 ```
 
 Shards live at `reviews/shards/{screen,context}-<owner-domain>.json`, are
 schema-validated against `schemas/{screen-shard,domain-context-shard}.schema.json`,
-and bind to the routing snapshot. The merge writes the authoritative global
-`reviews/screen-results.json` and `reviews/domain-context.json` only after
-full coverage and snapshot validation succeed.
+and bind to the routing snapshot. `status` validates every present shard and
+reports stage-aware readiness (`context_merge_ready`, `screen_merge_ready`,
+`merge_ready`); a present-but-invalid shard is reported with its diagnostic
+and never counts as ready. `merge-context` writes the authoritative
+`reviews/domain-context.json`; `merge-screen` requires it, writes
+`reviews/screen-results.json`, and derives the review snapshot; `merge`
+performs both merges and commits them together.
 
 The controller equivalent is:
 

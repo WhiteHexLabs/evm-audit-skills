@@ -42,16 +42,20 @@ provides no in-session sub-agent dispatch.
 
 When the active runtime can dispatch sub-agents (ZCode custom worker agent
 types), the same funnel executes with a main agent plus one worker per
-Domain: Project Analysis, Domain Resolution, the shard merge, and the Final
-Report stay with the main agent; Domain Context, Initial Review, Deep Audit,
-and Vulnerability Validation for each Domain run in parallel on that
-Domain's worker. A merge barrier sits between context/screen work and deep
-review because every deep record must bind to the single review snapshot
-derived from the complete global results. Parallel execution changes who runs
-each phase, never the gates: every shard, ledger record, and report input
-passes the same validation as in sequential mode. See the Master Skill's
-Orchestration section and [Audit Runtime](audit-runtime.md) for the exact
-commands and locking model.
+Domain per stage: Project Analysis, Domain Resolution, the stage merges, and
+the Final Report stay with the main agent; each of Domain Context, Initial
+Review, Deep Audit, and Vulnerability Validation runs as its own stage wave,
+with one worker per Domain dispatched to the agent type configured for that
+stage. Two controller-owned merge barriers sit between context and screen
+work and between screen and deep review, because every deep record must bind
+to the single review snapshot derived from the complete global results. A
+worker invocation never crosses a stage boundary — each custom agent pins
+exactly one model/thought-level contract. Parallelism is across Domains
+within a stage; stage ordering stays deterministic. Parallel execution
+changes who runs each phase, never the gates: every shard, ledger record,
+and report input passes the same validation as in sequential mode. See the
+Master Skill's Orchestration section and [Audit Runtime](audit-runtime.md)
+for the exact commands and locking model.
 
 ## 1. Project Analysis (`RECON`, `ROUTING`)
 

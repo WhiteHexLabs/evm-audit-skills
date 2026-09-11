@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:evm-audit-skills:codex-model-profile:v2",
+  "$id": "urn:evm-audit-skills:codex-model-profile:v3",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "provider", "profile_name", "stages"],
   "properties": {
-    "schema_version": {"const": 2},
+    "schema_version": {"const": 3},
     "provider": {"enum": ["codex", "zcode"]},
     "profile_name": {"type": "string", "minLength": 1},
     "stages": {
@@ -89,14 +89,14 @@
     "zcode_stage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["model", "reasoning_effort", "agent"],
+      "required": ["model", "thought_level", "agent"],
       "properties": {
         "model": {"enum": ["GLM-5.3", "GLM-5.3-Flash"]},
-        "reasoning_effort": {"enum": ["none", "low", "medium", "high", "xhigh", "max"]},
+        "thought_level": {"enum": ["low", "high", "max", "default"]},
         "agent": {
           "oneOf": [
             {"type": "null"},
-            {"enum": ["evm-audit-worker-deep", "evm-audit-worker-flash"]}
+            {"enum": ["evm-audit-worker-flash", "evm-audit-worker-deep", "evm-audit-worker-proof"]}
           ]
         }
       }

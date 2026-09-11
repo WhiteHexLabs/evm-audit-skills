@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
-"""Per-Domain shard authoring and merge for orchestrated parallel audits.
+"""Per-Domain shard authoring, stage merges, and readiness for orchestrated audits.
 
 Domain workers never edit the shared run files directly. Each worker writes
 its own shard (screen triage results or domain context) through this CLI,
 which validates the shard against the routing manifest before it is stored.
-The controller later merges all shards into the authoritative global
-artifacts under an exclusive cross-process lock.
+The controller later merges shards into the authoritative global artifacts
+under an exclusive cross-process lock, stage by stage:
+
+- ``merge-context`` requires exact context shard coverage and writes
+  ``reviews/domain-context.json``; it does not derive the review snapshot.
+- ``merge-screen`` additionally requires an authoritative domain-context
+  file, merges screen shards with exact selected-check coverage, writes
+  ``reviews/screen-results.json``, and derives the review snapshot.
+- ``merge`` is the compatibility convenience: context merge followed by
+  screen merge, committed together.
 
 Shards bind to the routing snapshot: a shard authored against a different
-snapshot is rejected at write time and again at merge time.
+snapshot is rejected at write time and again at merge time. ``status``
+validates every present shard with the same contract as merge, so a
+present-but-invalid shard can never be reported as merge-ready.
 """
 
 from __future__ import annotations
@@ -187,6 +197,7 @@ def _validate_screen_shard(
 def _validate_context_shard(
     root: Path,
     manifest: dict[str, Any],
+    resolution: dict[str, Any] | None,
     shard: dict[str, Any],
 ) -> None:
     validate_schema(root, "domain-context-shard.schema.json", shard)
@@ -250,7 +261,7 @@ def write_context_shard(root: Path, run_dir: Path, domain: str, input_path: Path
         "owner_domain": domain,
         "context": context,
     }
-    _validate_context_shard(root, manifest, shard)
+    _validate_context_shard(root, manifest, resolution, shard)
     target = _shard_path(run_dir, "context", domain)
     atomic_write_json(target, shard)
     return {
@@ -276,91 +287,176 @@ def _guard_replace(existing_path: Path, new_value: dict[str, Any], template_valu
     return True
 
 
+def _build_context_merge(
+    root: Path,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    values: dict[str, Any],
+    resolution: dict[str, Any] | None,
+    *,
+    force: bool,
+) -> tuple[dict[str, Any], bool, list[str]]:
+    expected = _context_domains(manifest, resolution)
+    merged_domains: dict[str, dict[str, Any]] = {}
+    for domain in sorted(expected):
+        shard_path = _shard_path(run_dir, "context", domain)
+        if not shard_path.exists():
+            raise ValueError(f"missing context shard for Domain {domain!r}: {shard_path}")
+        shard = load_json(shard_path)
+        _validate_context_shard(root, manifest, resolution, shard)
+        if shard["owner_domain"] != domain:
+            raise ValueError(f"context shard {shard_path.name} declares owner {shard['owner_domain']!r}")
+        merged_domains[domain] = shard["context"]
+    audit = manifest["audit_context"]
+    merged_context = {
+        "schema_version": DOMAIN_CONTEXT_VERSION,
+        "routing_snapshot_id": manifest["routing_snapshot_id"],
+        "registry_sha256": audit["registry_sha256"],
+        "source_digest": audit["source_digest"],
+        "compilation_input_digest": audit["compilation_input_digest"],
+        "domains": merged_domains,
+    }
+    unresolved_context = validate_domain_context(root, manifest, merged_context, resolution)
+    if unresolved_context:
+        raise ValueError(
+            "merged context remains UNKNOWN for: " + ", ".join(sorted(unresolved_context))
+        )
+    replaced = _guard_replace(
+        values["domain_context"],
+        merged_context,
+        domain_context_template(manifest, resolution),
+        force,
+        "reviews/domain-context.json",
+    )
+    return merged_context, replaced, sorted(expected)
+
+
+def _build_screen_merge(
+    root: Path,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    values: dict[str, Any],
+    resolution: dict[str, Any] | None,
+    effective_context: dict[str, Any],
+    *,
+    force: bool,
+) -> tuple[dict[str, Any], set[str], str, bool, list[str]]:
+    expected = _screen_domains(manifest, resolution)
+    merged_results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for domain in sorted(expected):
+        shard_path = _shard_path(run_dir, "screen", domain)
+        if not shard_path.exists():
+            raise ValueError(f"missing screen shard for Domain {domain!r}: {shard_path}")
+        shard = load_json(shard_path)
+        _validate_screen_shard(root, manifest, resolution, shard)
+        if shard["owner_domain"] != domain:
+            raise ValueError(f"screen shard {shard_path.name} declares owner {shard['owner_domain']!r}")
+        for entry in shard["results"]:
+            if entry["canonical_id"] in seen:
+                raise ValueError(
+                    f"canonical ID {entry['canonical_id']!r} appears in more than one screen shard"
+                )
+            seen.add(entry["canonical_id"])
+            merged_results.append(entry)
+    merged_results.sort(key=lambda entry: entry["canonical_id"])
+    audit = manifest["audit_context"]
+    merged_screen = {
+        "schema_version": SCREEN_RESULTS_VERSION,
+        "routing_snapshot_id": manifest["routing_snapshot_id"],
+        "registry_sha256": audit["registry_sha256"],
+        "source_digest": audit["source_digest"],
+        "compilation_input_digest": audit["compilation_input_digest"],
+        "results": merged_results,
+    }
+    candidates = validate_screen_results(root, manifest, merged_screen, resolution)
+    replaced = _guard_replace(
+        values["screen_results"],
+        merged_screen,
+        screen_results_template(manifest, resolution),
+        force,
+        "reviews/screen-results.json",
+    )
+    review_snapshot = derive_review_snapshot_id(root, manifest, resolution, effective_context, merged_screen)
+    return merged_screen, candidates, review_snapshot, replaced, sorted(expected)
+
+
+def _authoritative_context(
+    root: Path,
+    manifest: dict[str, Any],
+    values: dict[str, Any],
+    resolution: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not values["domain_context"].exists():
+        raise ValueError(
+            "merge-screen requires the authoritative reviews/domain-context.json; run merge-context first"
+        )
+    context = load_json(values["domain_context"])
+    unresolved = validate_domain_context(root, manifest, context, resolution)
+    if unresolved:
+        raise ValueError(
+            "authoritative domain-context.json remains UNKNOWN for: " + ", ".join(sorted(unresolved))
+        )
+    return context
+
+
+def merge_context(root: Path, run_dir: Path, *, force: bool = False) -> dict[str, Any]:
+    run_dir = run_dir.resolve()
+    with _ledger_lock(run_dir / "domain-shards-merge", shared=False):
+        manifest, values, resolution = _load_run(root, run_dir)
+        merged, replaced, domains = _build_context_merge(
+            root, run_dir, manifest, values, resolution, force=force
+        )
+        atomic_write_json(values["domain_context"], merged)
+    return {
+        "command": "merge-context",
+        "context_shard_domains": domains,
+        "domain_context_replaced": replaced,
+        "context_domain_count": len(domains),
+    }
+
+
+def merge_screen(root: Path, run_dir: Path, *, force: bool = False) -> dict[str, Any]:
+    run_dir = run_dir.resolve()
+    with _ledger_lock(run_dir / "domain-shards-merge", shared=False):
+        manifest, values, resolution = _load_run(root, run_dir)
+        effective_context = _authoritative_context(root, manifest, values, resolution)
+        merged, candidates, review_snapshot, replaced, domains = _build_screen_merge(
+            root, run_dir, manifest, values, resolution, effective_context, force=force
+        )
+        atomic_write_json(values["screen_results"], merged)
+    return {
+        "command": "merge-screen",
+        "screen_shard_domains": domains,
+        "screen_results_replaced": replaced,
+        "selected_count": len(merged["results"]),
+        "candidate_count": len(candidates),
+        "not_applicable_count": len(merged["results"]) - len(candidates),
+        "review_snapshot_id": review_snapshot,
+    }
+
+
 def merge_shards(root: Path, run_dir: Path, *, force: bool = False) -> dict[str, Any]:
     run_dir = run_dir.resolve()
     with _ledger_lock(run_dir / "domain-shards-merge", shared=False):
         manifest, values, resolution = _load_run(root, run_dir)
-        screen_expected = _screen_domains(manifest, resolution)
-        merged_results: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for domain in sorted(screen_expected):
-            shard_path = _shard_path(run_dir, "screen", domain)
-            if not shard_path.exists():
-                raise ValueError(f"missing screen shard for Domain {domain!r}: {shard_path}")
-            shard = load_json(shard_path)
-            _validate_screen_shard(root, manifest, resolution, shard)
-            if shard["owner_domain"] != domain:
-                raise ValueError(f"screen shard {shard_path.name} declares owner {shard['owner_domain']!r}")
-            for entry in shard["results"]:
-                if entry["canonical_id"] in seen:
-                    raise ValueError(
-                        f"canonical ID {entry['canonical_id']!r} appears in more than one screen shard"
-                    )
-                seen.add(entry["canonical_id"])
-                merged_results.append(entry)
-        merged_results.sort(key=lambda entry: entry["canonical_id"])
-        audit = manifest["audit_context"]
-        merged_screen = {
-            "schema_version": SCREEN_RESULTS_VERSION,
-            "routing_snapshot_id": manifest["routing_snapshot_id"],
-            "registry_sha256": audit["registry_sha256"],
-            "source_digest": audit["source_digest"],
-            "compilation_input_digest": audit["compilation_input_digest"],
-            "results": merged_results,
-        }
-        candidates = validate_screen_results(root, manifest, merged_screen, resolution)
-
-        context_expected = _context_domains(manifest, resolution)
-        merged_domains: dict[str, dict[str, Any]] = {}
-        for domain in sorted(context_expected):
-            shard_path = _shard_path(run_dir, "context", domain)
-            if not shard_path.exists():
-                raise ValueError(f"missing context shard for Domain {domain!r}: {shard_path}")
-            shard = load_json(shard_path)
-            _validate_context_shard(root, manifest, shard)
-            if shard["owner_domain"] != domain:
-                raise ValueError(f"context shard {shard_path.name} declares owner {shard['owner_domain']!r}")
-            merged_domains[domain] = shard["context"]
-        merged_context = {
-            "schema_version": DOMAIN_CONTEXT_VERSION,
-            "routing_snapshot_id": manifest["routing_snapshot_id"],
-            "registry_sha256": audit["registry_sha256"],
-            "source_digest": audit["source_digest"],
-            "compilation_input_digest": audit["compilation_input_digest"],
-            "domains": merged_domains,
-        }
-
-        screen_replaced = _guard_replace(
-            values["screen_results"],
-            merged_screen,
-            screen_results_template(manifest, resolution),
-            force,
-            "reviews/screen-results.json",
+        merged_context, context_replaced, context_domains = _build_context_merge(
+            root, run_dir, manifest, values, resolution, force=force
         )
-        context_replaced = _guard_replace(
-            values["domain_context"],
-            merged_context,
-            domain_context_template(manifest, resolution),
-            force,
-            "reviews/domain-context.json",
+        merged_screen, candidates, review_snapshot, screen_replaced, screen_domains = _build_screen_merge(
+            root, run_dir, manifest, values, resolution, merged_context, force=force
         )
-        unresolved_context = validate_domain_context(root, manifest, merged_context, resolution)
-        if unresolved_context:
-            raise ValueError(
-                "merged context remains UNKNOWN for: " + ", ".join(sorted(unresolved_context))
-            )
-        review_snapshot = derive_review_snapshot_id(root, manifest, resolution, merged_context, merged_screen)
-        atomic_write_json(values["screen_results"], merged_screen)
         atomic_write_json(values["domain_context"], merged_context)
+        atomic_write_json(values["screen_results"], merged_screen)
     return {
         "command": "merge",
-        "screen_shard_domains": sorted(screen_expected),
-        "context_shard_domains": sorted(context_expected),
-        "screen_results_replaced": screen_replaced,
+        "context_shard_domains": context_domains,
+        "screen_shard_domains": screen_domains,
         "domain_context_replaced": context_replaced,
-        "selected_count": len(merged_results),
+        "screen_results_replaced": screen_replaced,
+        "selected_count": len(merged_screen["results"]),
         "candidate_count": len(candidates),
-        "not_applicable_count": len(merged_results) - len(candidates),
+        "not_applicable_count": len(merged_screen["results"]) - len(candidates),
         "review_snapshot_id": review_snapshot,
     }
 
@@ -368,36 +464,54 @@ def merge_shards(root: Path, run_dir: Path, *, force: bool = False) -> dict[str,
 def shard_status(root: Path, run_dir: Path) -> dict[str, Any]:
     run_dir = run_dir.resolve()
     manifest, values, resolution = _load_run(root, run_dir)
-    screen: list[dict[str, Any]] = []
-    for domain, ids in sorted(_screen_domains(manifest, resolution).items()):
-        path = _shard_path(run_dir, "screen", domain)
-        entry: dict[str, Any] = {"owner_domain": domain, "expected_checks": len(ids), "shard_present": path.exists()}
-        if path.exists():
-            shard = load_json(path)
-            entry["written_checks"] = len(shard.get("results", []))
-            entry["routing_snapshot_matches"] = shard.get("routing_snapshot_id") == manifest["routing_snapshot_id"]
-        screen.append(entry)
-    context: list[dict[str, Any]] = []
-    for domain, keys in sorted(_context_domains(manifest, resolution).items()):
-        path = _shard_path(run_dir, "context", domain)
-        entry = {"owner_domain": domain, "expected_keys": len(keys), "shard_present": path.exists()}
-        if path.exists():
-            shard = load_json(path)
-            entry["written_keys"] = len(shard.get("context", {}))
-            entry["routing_snapshot_matches"] = shard.get("routing_snapshot_id") == manifest["routing_snapshot_id"]
-        context.append(entry)
-    missing_screen = sorted(item["owner_domain"] for item in screen if not item["shard_present"])
-    missing_context = sorted(item["owner_domain"] for item in context if not item["shard_present"])
+
+    def diagnose(kind: str, expected_domains: dict[str, Any], validator) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+        entries: list[dict[str, Any]] = []
+        missing: list[str] = []
+        invalid: list[str] = []
+        for domain in sorted(expected_domains):
+            path = _shard_path(run_dir, kind, domain)
+            entry: dict[str, Any] = {"owner_domain": domain, "shard_present": path.exists()}
+            if path.exists():
+                try:
+                    shard = load_json(path)
+                    validator(root, manifest, resolution, shard)
+                    entry["valid"] = True
+                except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                    entry["valid"] = False
+                    entry["error"] = str(exc)
+                    invalid.append(domain)
+            else:
+                missing.append(domain)
+            entries.append(entry)
+        return entries, missing, invalid
+
+    screen_entries, missing_screen, invalid_screen = diagnose(
+        "screen", _screen_domains(manifest, resolution), _validate_screen_shard
+    )
+    context_entries, missing_context, invalid_context = diagnose(
+        "context", _context_domains(manifest, resolution), _validate_context_shard
+    )
+    context_merge_ready = not missing_context and not invalid_context
+    screen_merge_ready = (
+        not missing_screen
+        and not invalid_screen
+        and values["domain_context"].exists()
+    )
     return {
         "command": "status",
         "routing_snapshot_id": manifest["routing_snapshot_id"],
-        "screen_shards": screen,
-        "context_shards": context,
-        "merge_ready": not missing_screen and not missing_context,
+        "screen_shards": screen_entries,
+        "context_shards": context_entries,
+        "context_merge_ready": context_merge_ready,
+        "screen_merge_ready": screen_merge_ready,
+        "merge_ready": context_merge_ready and screen_merge_ready,
         "missing_screen_shards": missing_screen,
         "missing_context_shards": missing_context,
-        "global_screen_results_present": values["screen_results"].exists(),
+        "invalid_screen_shards": invalid_screen,
+        "invalid_context_shards": invalid_context,
         "global_domain_context_present": values["domain_context"].exists(),
+        "global_screen_results_present": values["screen_results"].exists(),
     }
 
 
@@ -412,10 +526,11 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--input", type=Path, required=True)
         command.add_argument("--root", type=Path, default=ROOT)
 
-    merge = subparsers.add_parser("merge")
-    merge.add_argument("--run-dir", type=Path, required=True)
-    merge.add_argument("--force", action="store_true", help="replace global artifacts that are neither the template nor the merged shards")
-    merge.add_argument("--root", type=Path, default=ROOT)
+    for name in ("merge", "merge-context", "merge-screen"):
+        command = subparsers.add_parser(name)
+        command.add_argument("--run-dir", type=Path, required=True)
+        command.add_argument("--force", action="store_true", help="replace global artifacts that are neither the template nor the merged shards")
+        command.add_argument("--root", type=Path, default=ROOT)
 
     status = subparsers.add_parser("status")
     status.add_argument("--run-dir", type=Path, required=True)
@@ -429,6 +544,10 @@ def main(argv: list[str] | None = None) -> int:
             result = write_screen_shard(root, args.run_dir, args.domain, args.input)
         elif args.command == "write-context-shard":
             result = write_context_shard(root, args.run_dir, args.domain, args.input)
+        elif args.command == "merge-context":
+            result = merge_context(root, args.run_dir, force=args.force)
+        elif args.command == "merge-screen":
+            result = merge_screen(root, args.run_dir, force=args.force)
         elif args.command == "merge":
             result = merge_shards(root, args.run_dir, force=args.force)
         else:

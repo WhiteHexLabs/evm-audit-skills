@@ -34,7 +34,7 @@ class PackagingTests(unittest.TestCase):
                 if resolved.parent.name == "evm-audit-master":
                     self.assertTrue((suite / "data" / "features.json").exists())
                     self.assertTrue((suite / "scripts" / "select_checks.py").exists())
-                    for agent in ("evm-audit-worker-deep", "evm-audit-worker-flash"):
+                    for agent in ("evm-audit-worker-flash", "evm-audit-worker-deep", "evm-audit-worker-proof"):
                         template = suite / "skills" / "evm-audit-master" / "agents" / f"{agent}.md"
                         self.assertTrue(template.is_file(), template)
                         self.assertIn("model:", template.read_text(encoding="utf-8"))

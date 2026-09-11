@@ -18,31 +18,35 @@ Codex default (`provider: codex`; unchanged from v1):
 | Final Report | Terra · Medium |
 
 ZCode default (`provider: zcode`; each stage additionally names the worker
-agent type that dispatches it, `null` for controller-run stages):
+agent type that dispatches it, `null` for controller-run stages). ZCode
+thinking levels are model-specific: GLM-5.3 supports `low`, `high`, and
+`max`; GLM-5.3-Flash has no verified explicit level and is represented as
+`default` (unpinned — the worker definition pins no `thoughtLevel`):
 
-| Public phase | Model | Worker agent |
+| Public phase | Model / thought level | Worker agent |
 | --- | --- | --- |
 | Project Analysis | GLM-5.3 · Max | — (main agent) |
-| Context Analysis · Resolution | GLM-5.3 · Medium | — (main agent) |
-| Context Analysis · Domain Context | GLM-5.3-Flash · Medium | `evm-audit-worker-flash` |
+| Context Analysis · Resolution | GLM-5.3 · High | — (main agent) |
+| Context Analysis · Domain Context | GLM-5.3-Flash · default | `evm-audit-worker-flash` |
 | Initial Review | GLM-5.3 · High | `evm-audit-worker-deep` |
 | Deep Audit | GLM-5.3 · High | `evm-audit-worker-deep` |
-| Vulnerability Validation | GLM-5.3 · Max | `evm-audit-worker-deep` |
-| Final Report | GLM-5.3 · Medium | — (main agent) |
+| Vulnerability Validation | GLM-5.3 · Max | `evm-audit-worker-proof` |
+| Final Report | GLM-5.3 · High | — (main agent) |
 
 Initial Review deliberately uses the flagship model: `NOT_APPLICABLE_CONFIRMED`
 is a trusted-absence decision, so triage quality is security-relevant.
 
-Use the defaults unless a stage needs a deliberate model or reasoning
+Use the defaults unless a stage needs a deliberate model or thinking-level
 override. The selected profile is stored as
 `config/codex-model-profile.json` inside the audit run and must contain every
 internal stage ID exactly once. A zcode stage entry is
-`{model, reasoning_effort, agent}`; the validator enforces that the declared
-`model` matches the model pinned in the named worker agent's template
-(`evm-audit-worker-deep` ⇒ GLM-5.3, `evm-audit-worker-flash` ⇒
-GLM-5.3-Flash), so the profile cannot claim a model the dispatched agent does
-not run. Reasoning effort is advisory metadata for ZCode (the agent type
-does not expose a separate effort control).
+`{model, thought_level, agent}`; the validator enforces the full execution
+contract of the named worker against the shipped agent template — model,
+thought level, and the stages the agent is allowed to execute
+(`evm-audit-worker-flash` ⇒ Domain Context; `evm-audit-worker-deep` ⇒
+Screen + Deep Review; `evm-audit-worker-proof` ⇒ Proof) — so the profile
+cannot claim a contract its dispatched agent cannot run, and a worker
+dispatch never crosses a stage boundary into a different contract.
 
 To set defaults for future audits, create and edit the user-level profile for
 your provider:
@@ -65,14 +69,18 @@ The model profile controls model selection only. It does not relax immutable
 routing, evidence gates, proof requirements, stale-artifact rejection, or
 confirmed-only reporting.
 
-The controller exposes the recommended model and reasoning pair (and, for
+The controller exposes the recommended model and thinking level (and, for
 zcode fan-out stages, the worker agent type) to the executor; it does not
 switch the active model of the session it runs in. On Codex, a stage actually
 runs on the recommended model only when the user launches that stage session
-with it. On ZCode, worker stages actually run on the configured custom agent
-types when the Master Skill dispatches Domain workers to them (see the
-Orchestration section of `skills/evm-audit-master/SKILL.md`); the main
-agent's own model remains whatever the user selected for the session.
+with it. On ZCode, controller-stage entries (Project Analysis, Domain
+Resolution, Final Report) are handoff recommendations for the main session —
+the suite never switches the main agent's model or thought level — while
+worker stages actually run on the configured custom agent types when the
+Master Skill dispatches Domain workers to them (see the Orchestration
+section of `skills/evm-audit-master/SKILL.md`). Each worker agent type pins
+exactly one model/`thoughtLevel` contract, so a dispatch cannot silently
+change models midway through a stage.
 
 The machine-readable contract is the
 [model profile schema](../schemas/codex-model-profile.schema.json); the

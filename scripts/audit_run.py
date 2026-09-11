@@ -281,13 +281,16 @@ def _log_model_guidance(run_dir: Path | None, stage_name: str) -> None:
     execution = recommended_execution(run_dir, stage_name)
     label = "Codex" if execution["provider"] == "codex" else "Agent"
     info(f"{label} model: {execution['model']}")
-    info(f"Reasoning: {execution['reasoning_effort']}")
+    if execution["provider"] == "codex":
+        info(f"Reasoning: {execution['reasoning_effort']}")
+    else:
+        info(f"Thought level: {execution['thought_level']}")
     if execution.get("agent") is not None:
         info(f"Worker agent: {execution['agent']}")
     if execution["provider"] == "codex":
         info("Handoff: controller does not switch the active Codex model")
     else:
-        info("Handoff: controller does not switch its own model; workers run on their configured agent types")
+        info("Handoff: controller does not switch its own model or thought level; workers run on their configured agent types")
 
 
 def _stage_result(

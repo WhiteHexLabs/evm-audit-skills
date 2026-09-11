@@ -19,7 +19,7 @@ from scripts.codex_model_profile import (
     DEFAULT_CODEX_MODEL_PROFILE,
     DEFAULT_ZCODE_MODEL_PROFILE,
     STAGES,
-    ZCODE_AGENTS,
+    ZCODE_WORKER_AGENTS,
     compact_summary,
     default_profile,
     load_global_profile,
@@ -327,18 +327,18 @@ class CodexModelProfileTests(unittest.TestCase):
         expected = {
             "RECON": ("GLM-5.3", "max", None),
             "ROUTING": ("GLM-5.3", "max", None),
-            "DOMAIN_RESOLUTION": ("GLM-5.3", "medium", None),
-            "DOMAIN_CONTEXT": ("GLM-5.3-Flash", "medium", "evm-audit-worker-flash"),
+            "DOMAIN_RESOLUTION": ("GLM-5.3", "high", None),
+            "DOMAIN_CONTEXT": ("GLM-5.3-Flash", "default", "evm-audit-worker-flash"),
             "SCREEN": ("GLM-5.3", "high", "evm-audit-worker-deep"),
             "DEEP_REVIEW": ("GLM-5.3", "high", "evm-audit-worker-deep"),
-            "PROOF": ("GLM-5.3", "max", "evm-audit-worker-deep"),
-            "REPORT": ("GLM-5.3", "medium", None),
+            "PROOF": ("GLM-5.3", "max", "evm-audit-worker-proof"),
+            "REPORT": ("GLM-5.3", "high", None),
         }
         zcode = default_profile("zcode")
         self.assertEqual(DEFAULT_ZCODE_MODEL_PROFILE, zcode)
         self.assertEqual(
             {
-                stage: (zcode["stages"][stage]["model"], zcode["stages"][stage]["reasoning_effort"], zcode["stages"][stage]["agent"])
+                stage: (zcode["stages"][stage]["model"], zcode["stages"][stage]["thought_level"], zcode["stages"][stage]["agent"])
                 for stage in STAGES
             },
             expected,
@@ -349,11 +349,38 @@ class CodexModelProfileTests(unittest.TestCase):
         validate_schema(ROOT, "codex-model-profile.schema.json", zcode)
         self.assertIn("Initial Review: GLM-5.3 high · evm-audit-worker-deep", compact_summary(zcode))
 
-    def test_zcode_agent_model_consistency_is_enforced(self) -> None:
-        lying = default_profile("zcode")
-        lying["stages"]["DEEP_REVIEW"]["model"] = "GLM-5.3-Flash"
-        with self.assertRaisesRegex(ValueError, "runs GLM-5.3, not 'GLM-5.3-Flash'"):
-            validate_profile(lying)
+    def test_zcode_thought_levels_are_model_specific(self) -> None:
+        invalid = default_profile("zcode")
+        invalid["stages"]["DOMAIN_RESOLUTION"]["thought_level"] = "medium"
+        with self.assertRaisesRegex(ValueError, "invalid GLM-5.3 thought level 'medium'"):
+            validate_profile(invalid)
+        invalid = default_profile("zcode")
+        invalid["stages"]["DOMAIN_CONTEXT"]["thought_level"] = "high"
+        with self.assertRaisesRegex(ValueError, "invalid GLM-5.3-Flash thought level 'high'"):
+            validate_profile(invalid)
+        for level in ("low", "high", "max"):
+            valid = default_profile("zcode")
+            valid["stages"]["DOMAIN_RESOLUTION"]["thought_level"] = level
+            validate_profile(valid)
+
+    def test_zcode_worker_contracts_are_enforced(self) -> None:
+        lying_model = default_profile("zcode")
+        lying_model["stages"]["DOMAIN_CONTEXT"] = {
+            "model": "GLM-5.3",
+            "thought_level": "high",
+            "agent": "evm-audit-worker-flash",
+        }
+        with self.assertRaisesRegex(ValueError, "runs GLM-5.3-Flash, not 'GLM-5.3'"):
+            validate_profile(lying_model)
+        lying_level = default_profile("zcode")
+        lying_level["stages"]["SCREEN"]["thought_level"] = "max"
+        with self.assertRaisesRegex(ValueError, "pins thought level 'high', not 'max'"):
+            validate_profile(lying_level)
+        wrong_stage = default_profile("zcode")
+        wrong_stage["stages"]["DEEP_REVIEW"]["agent"] = "evm-audit-worker-proof"
+        wrong_stage["stages"]["DEEP_REVIEW"]["thought_level"] = "max"
+        with self.assertRaisesRegex(ValueError, "may not execute this stage"):
+            validate_profile(wrong_stage)
         unknown_agent = default_profile("zcode")
         unknown_agent["stages"]["SCREEN"]["agent"] = "audit-deep"
         with self.assertRaisesRegex(ValueError, "invalid zcode agent"):
@@ -366,19 +393,41 @@ class CodexModelProfileTests(unittest.TestCase):
         codex_with_agent["stages"]["SCREEN"] = {
             "model": "gpt-5.6-terra",
             "reasoning_effort": "high",
-            "agent": ZCODE_AGENTS[0],
+            "agent": "evm-audit-worker-deep",
         }
-        with self.assertRaisesRegex(ValueError, "must contain exactly agent, model, reasoning_effort|for provider codex"):
+        with self.assertRaisesRegex(ValueError, "must contain exactly agent, model|for provider codex"):
             validate_profile(codex_with_agent)
 
-    def test_v1_profile_is_rejected(self) -> None:
+    def test_zcode_worker_frontmatter_matches_execution_contracts(self) -> None:
+        for name, contract in ZCODE_WORKER_AGENTS.items():
+            template = ROOT / "skills" / "evm-audit-master" / "agents" / f"{name}.md"
+            self.assertTrue(template.is_file(), template)
+            frontmatter: dict[str, str] = {}
+            for line in template.read_text(encoding="utf-8").splitlines():
+                if line == "---":
+                    if frontmatter:
+                        break
+                    continue
+                if ": " in line and not line.startswith(" "):
+                    key, value = line.split(": ", 1)
+                    frontmatter[key] = value
+            self.assertEqual(frontmatter.get("name"), name, template)
+            self.assertEqual(frontmatter.get("model"), contract["model"], template)
+            pinned = frontmatter.get("thoughtLevel")
+            if contract["thought_level"] == "default":
+                self.assertIsNone(pinned, f"{name} must not pin an unverified Flash thought level")
+            else:
+                self.assertEqual(pinned, contract["thought_level"], template)
+
+    def test_outdated_profile_schema_versions_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            v1 = default_profile()
-            v1["schema_version"] = 1
-            path = Path(directory) / "v1.json"
-            path.write_text(json.dumps(v1) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "schema_version must be 2"):
-                load_profile(path)
+            for version in (1, 2):
+                stale = default_profile()
+                stale["schema_version"] = version
+                path = Path(directory) / f"v{version}.json"
+                path.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "schema_version must be 3"):
+                    load_profile(path)
 
     def test_zcode_global_profile_and_init_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -409,33 +458,33 @@ class CodexModelProfileTests(unittest.TestCase):
                 {
                     "provider": "zcode",
                     "model": "GLM-5.3-Flash",
-                    "reasoning_effort": "medium",
+                    "thought_level": "default",
                     "agent": "evm-audit-worker-flash",
                 },
             )
-            self.assertEqual(
-                recommended_execution(run_dir, "DEEP_REVIEW"),
-                {
-                    "provider": "zcode",
-                    "model": "GLM-5.3",
-                    "reasoning_effort": "high",
-                    "agent": "evm-audit-worker-deep",
-                },
-            )
+            # Every stage handoff names exactly the worker contract that will
+            # be dispatched for it (controller stages carry agent null).
+            expected_handoffs = {
+                "RECON": ("GLM-5.3", "max", None),
+                "ROUTING": ("GLM-5.3", "max", None),
+                "DOMAIN_RESOLUTION": ("GLM-5.3", "high", None),
+                "DOMAIN_CONTEXT": ("GLM-5.3-Flash", "default", "evm-audit-worker-flash"),
+                "SCREEN": ("GLM-5.3", "high", "evm-audit-worker-deep"),
+                "DEEP_REVIEW": ("GLM-5.3", "high", "evm-audit-worker-deep"),
+                "PROOF": ("GLM-5.3", "max", "evm-audit-worker-proof"),
+                "REPORT": ("GLM-5.3", "high", None),
+            }
+            for stage, (model, level, agent) in expected_handoffs.items():
+                self.assertEqual(
+                    recommended_execution(run_dir, stage),
+                    {"provider": "zcode", "model": model, "thought_level": level, "agent": agent},
+                    stage,
+                )
             code, stdout, stderr = self.run_audit_run(
                 ["models", "--run-dir", str(run_dir), "--reset-defaults", "--quiet"], home
             )
             self.assertEqual(code, 0, stderr)
             self.assertEqual(json.loads(stdout)["profile"], default_profile("zcode"))
-
-    def test_worker_agent_templates_exist(self) -> None:
-        for name in ZCODE_AGENTS:
-            template = ROOT / "skills" / "evm-audit-master" / "agents" / f"{name}.md"
-            self.assertTrue(template.is_file(), template)
-            text = template.read_text(encoding="utf-8")
-            self.assertIn(f"name: {name}", text)
-            expected_model = {"evm-audit-worker-deep": "GLM-5.3", "evm-audit-worker-flash": "GLM-5.3-Flash"}[name]
-            self.assertIn(f"model: {expected_model}", text)
 
 
 if __name__ == "__main__":
