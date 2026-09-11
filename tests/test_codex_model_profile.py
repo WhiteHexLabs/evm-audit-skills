@@ -17,10 +17,13 @@ from scripts.audit_artifacts import review_state_digest
 from scripts.audit_run import main as audit_run_main, recommended_execution
 from scripts.codex_model_profile import (
     DEFAULT_CODEX_MODEL_PROFILE,
+    DEFAULT_ZCODE_MODEL_PROFILE,
     STAGES,
+    ZCODE_AGENTS,
     compact_summary,
     default_profile,
     load_global_profile,
+    load_profile,
     validate_profile,
     write_profile,
 )
@@ -319,6 +322,120 @@ class CodexModelProfileTests(unittest.TestCase):
             self.assertNotEqual(code, 0)
             state = json.loads((run_dir / "audit-state.json").read_text(encoding="utf-8"))
             self.assertNotEqual(state["status"], "INVALID_SNAPSHOT")
+
+    def test_zcode_default_profile_is_exact_and_schema_valid(self) -> None:
+        expected = {
+            "RECON": ("GLM-5.3", "max", None),
+            "ROUTING": ("GLM-5.3", "max", None),
+            "DOMAIN_RESOLUTION": ("GLM-5.3", "medium", None),
+            "DOMAIN_CONTEXT": ("GLM-5.3-Flash", "medium", "evm-audit-worker-flash"),
+            "SCREEN": ("GLM-5.3", "high", "evm-audit-worker-deep"),
+            "DEEP_REVIEW": ("GLM-5.3", "high", "evm-audit-worker-deep"),
+            "PROOF": ("GLM-5.3", "max", "evm-audit-worker-deep"),
+            "REPORT": ("GLM-5.3", "medium", None),
+        }
+        zcode = default_profile("zcode")
+        self.assertEqual(DEFAULT_ZCODE_MODEL_PROFILE, zcode)
+        self.assertEqual(
+            {
+                stage: (zcode["stages"][stage]["model"], zcode["stages"][stage]["reasoning_effort"], zcode["stages"][stage]["agent"])
+                for stage in STAGES
+            },
+            expected,
+        )
+        validate_profile(zcode)
+        from scripts.audit_artifacts import validate_schema
+
+        validate_schema(ROOT, "codex-model-profile.schema.json", zcode)
+        self.assertIn("Initial Review: GLM-5.3 high · evm-audit-worker-deep", compact_summary(zcode))
+
+    def test_zcode_agent_model_consistency_is_enforced(self) -> None:
+        lying = default_profile("zcode")
+        lying["stages"]["DEEP_REVIEW"]["model"] = "GLM-5.3-Flash"
+        with self.assertRaisesRegex(ValueError, "runs GLM-5.3, not 'GLM-5.3-Flash'"):
+            validate_profile(lying)
+        unknown_agent = default_profile("zcode")
+        unknown_agent["stages"]["SCREEN"]["agent"] = "audit-deep"
+        with self.assertRaisesRegex(ValueError, "invalid zcode agent"):
+            validate_profile(unknown_agent)
+        wrong_vocab = default_profile("zcode")
+        wrong_vocab["stages"]["REPORT"]["model"] = "gpt-5.6-terra"
+        with self.assertRaisesRegex(ValueError, "unsupported ZCode model"):
+            validate_profile(wrong_vocab)
+        codex_with_agent = default_profile()
+        codex_with_agent["stages"]["SCREEN"] = {
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "high",
+            "agent": ZCODE_AGENTS[0],
+        }
+        with self.assertRaisesRegex(ValueError, "must contain exactly agent, model, reasoning_effort|for provider codex"):
+            validate_profile(codex_with_agent)
+
+    def test_v1_profile_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            v1 = default_profile()
+            v1["schema_version"] = 1
+            path = Path(directory) / "v1.json"
+            path.write_text(json.dumps(v1) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "schema_version must be 2"):
+                load_profile(path)
+
+    def test_zcode_global_profile_and_init_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            home = root / "home"
+            code, _, stderr = self.run_audit_run(["models", "--init-global", "--provider", "zcode", "--quiet"], home)
+            self.assertEqual(code, 0, stderr)
+            global_path = home / ".zcode/evm-audit-model-profile.json"
+            self.assertEqual(load_global_profile(global_path), default_profile("zcode"))
+            self.assertFalse((home / ".codex/evm-audit-model-profile.json").exists())
+            run_dir = root / "run"
+            code, stdout, stderr = self.run_audit_run(
+                [
+                    "init", str(EMPTY_TARGET), "--run-dir", str(run_dir),
+                    "--audit-root", str(EMPTY_TARGET), "--domain", "evm-audit-general",
+                    "--provider", "zcode", "--accept-default-models", "--quiet",
+                ],
+                home,
+            )
+            self.assertEqual(code, 0, stderr)
+            profile_path = run_dir / "config/codex-model-profile.json"
+            self.assertEqual(json.loads(profile_path.read_text(encoding="utf-8")), default_profile("zcode"))
+            payload = json.loads(stdout)
+            # Single-domain init skips deferred resolution, so the next stage
+            # is DOMAIN_CONTEXT: the flash worker with its agent assignment.
+            self.assertEqual(
+                payload["next"]["recommended_execution"],
+                {
+                    "provider": "zcode",
+                    "model": "GLM-5.3-Flash",
+                    "reasoning_effort": "medium",
+                    "agent": "evm-audit-worker-flash",
+                },
+            )
+            self.assertEqual(
+                recommended_execution(run_dir, "DEEP_REVIEW"),
+                {
+                    "provider": "zcode",
+                    "model": "GLM-5.3",
+                    "reasoning_effort": "high",
+                    "agent": "evm-audit-worker-deep",
+                },
+            )
+            code, stdout, stderr = self.run_audit_run(
+                ["models", "--run-dir", str(run_dir), "--reset-defaults", "--quiet"], home
+            )
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(json.loads(stdout)["profile"], default_profile("zcode"))
+
+    def test_worker_agent_templates_exist(self) -> None:
+        for name in ZCODE_AGENTS:
+            template = ROOT / "skills" / "evm-audit-master" / "agents" / f"{name}.md"
+            self.assertTrue(template.is_file(), template)
+            text = template.read_text(encoding="utf-8")
+            self.assertIn(f"name: {name}", text)
+            expected_model = {"evm-audit-worker-deep": "GLM-5.3", "evm-audit-worker-flash": "GLM-5.3-Flash"}[name]
+            self.assertIn(f"model: {expected_model}", text)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover
 
 try:
     from codex_model_profile import (
+        PROVIDERS,
         default_profile,
         global_profile_path,
         init_global_profile,
@@ -43,6 +44,7 @@ try:
     )
 except ImportError:  # pragma: no cover
     from scripts.codex_model_profile import (
+        PROVIDERS,
         default_profile,
         global_profile_path,
         init_global_profile,
@@ -277,9 +279,15 @@ def _log_model_guidance(run_dir: Path | None, stage_name: str) -> None:
     if run_dir is None:
         return
     execution = recommended_execution(run_dir, stage_name)
-    info(f"Codex model: {execution['model']}")
+    label = "Codex" if execution["provider"] == "codex" else "Agent"
+    info(f"{label} model: {execution['model']}")
     info(f"Reasoning: {execution['reasoning_effort']}")
-    info("Handoff: controller does not switch the active Codex model")
+    if execution.get("agent") is not None:
+        info(f"Worker agent: {execution['agent']}")
+    if execution["provider"] == "codex":
+        info("Handoff: controller does not switch the active Codex model")
+    else:
+        info("Handoff: controller does not switch its own model; workers run on their configured agent types")
 
 
 def _stage_result(
@@ -653,12 +661,13 @@ def _log_current_state(
 
 
 def _init_model_profile(args: argparse.Namespace, run_dir: Path) -> None:
+    provider = getattr(args, "provider", "codex")
     if args.model_profile:
         profile = load_profile(args.model_profile.resolve())
     elif args.accept_default_models:
-        profile = default_profile()
+        profile = default_profile(provider)
     else:
-        profile = load_global_profile() or default_profile()
+        profile = load_global_profile(global_profile_path(provider)) or default_profile(provider)
     write_profile(paths(run_dir)["model_profile"], profile)
 
 
@@ -2145,15 +2154,18 @@ def models_run(
     model_profile_path: Path | None = None,
     reset_defaults: bool = False,
     init_global: bool = False,
+    provider: str = "codex",
 ) -> dict[str, Any]:
     if init_global:
         if run_dir is not None or model_profile_path is not None or reset_defaults:
             raise ValueError("--init-global cannot be combined with run-scoped model options")
-        profile = init_global_profile()
+        if provider not in PROVIDERS:
+            raise ValueError(f"unsupported provider {provider!r}; expected one of {', '.join(PROVIDERS)}")
+        profile = init_global_profile(global_profile_path(provider), provider)
         return {
             "stage": "MODELS",
             "scope": "global",
-            "profile_path": str(global_profile_path()),
+            "profile_path": str(global_profile_path(provider)),
             "persisted": True,
             "profile": profile,
         }
@@ -2167,12 +2179,14 @@ def models_run(
         profile = load_profile(model_profile_path.resolve())
         write_profile(values["model_profile"], profile)
     elif reset_defaults:
-        profile = default_profile()
+        current = load_profile(values["model_profile"]) if values["model_profile"].exists() else None
+        target_provider = current["provider"] if current is not None else provider
+        profile = default_profile(target_provider)
         write_profile(values["model_profile"], profile)
     elif values["model_profile"].exists():
         profile = load_profile(values["model_profile"])
     else:
-        profile = default_profile()
+        profile = default_profile(provider)
     return {
         "stage": "MODELS",
         "profile_path": str(values["model_profile"]),
@@ -3072,16 +3086,22 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument("--audit-timestamp")
     init.add_argument("--environment-context", type=Path)
     init.add_argument("--require-complete-compilation", action="store_true")
+    init.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        default="codex",
+        help="agent provider whose default/global model profile is used when no explicit profile is given",
+    )
     model_options = init.add_mutually_exclusive_group()
     model_options.add_argument(
         "--accept-default-models",
         action="store_true",
-        help="persist the canonical Codex stage-model profile",
+        help="persist the canonical stage-model profile for the selected provider",
     )
     model_options.add_argument(
         "--model-profile",
         type=Path,
-        help="validate and persist a Codex stage-model profile",
+        help="validate and persist a stage-model profile",
     )
     _add_logging_flags(init)
 
@@ -3120,20 +3140,26 @@ def main(argv: list[str] | None = None) -> int:
     models.add_argument("--run-dir", type=Path)
     models.add_argument("--root", type=Path, default=ROOT)
     models.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        default="codex",
+        help="agent provider for --init-global and for runs without a persisted profile",
+    )
+    models.add_argument(
         "--init-global",
         action="store_true",
-        help="create the user-level Codex profile if it does not exist",
+        help="create the user-level profile for the selected provider if it does not exist",
     )
     model_options = models.add_mutually_exclusive_group()
     model_options.add_argument(
         "--reset-defaults",
         action="store_true",
-        help="replace the run-scoped Codex profile with canonical defaults",
+        help="replace the run-scoped profile with the canonical defaults of its provider",
     )
     model_options.add_argument(
         "--model-profile",
         type=Path,
-        help="validate and replace the run-scoped Codex profile",
+        help="validate and replace the run-scoped profile",
     )
     _add_logging_flags(models)
 
@@ -3154,6 +3180,7 @@ def main(argv: list[str] | None = None) -> int:
                 model_profile_path=args.model_profile,
                 reset_defaults=args.reset_defaults,
                 init_global=args.init_global,
+                provider=args.provider,
             )
         elif args.command == "verify-poc":
             result = verify_poc(root, args.run_dir, timeout=args.timeout)
