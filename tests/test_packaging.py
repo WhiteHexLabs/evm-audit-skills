@@ -34,6 +34,10 @@ class PackagingTests(unittest.TestCase):
                 if resolved.parent.name == "evm-audit-master":
                     self.assertTrue((suite / "data" / "features.json").exists())
                     self.assertTrue((suite / "scripts" / "select_checks.py").exists())
+                    for agent in ("evm-audit-worker-deep", "evm-audit-worker-flash"):
+                        template = suite / "skills" / "evm-audit-master" / "agents" / f"{agent}.md"
+                        self.assertTrue(template.is_file(), template)
+                        self.assertIn("model:", template.read_text(encoding="utf-8"))
                 else:
                     self.assertTrue((suite / "skills" / "evm-audit-master" / "references" / "check-review-contract.runtime.md").exists())
                     self.assertNotIn("use the canonical IDs from `../data/canonical-checks.json`", text)
