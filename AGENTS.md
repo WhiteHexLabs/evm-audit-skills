@@ -765,7 +765,74 @@ Avoid adding a large dependency for functionality that can be implemented safely
 
 ---
 
-# 17. Refactoring rules
+# 17. Refactoring and maintainability rules
+
+Maintainability is a first-class engineering requirement, but it must never weaken the security invariants in this file.
+
+## 17.1 Prefer maintainable implementations
+
+When changing code, prefer the smallest coherent design that is easy for a future maintainer to understand, verify, test, and modify safely.
+
+Prefer:
+
+- clear responsibility boundaries over convenience-driven coupling;
+- small, cohesive functions/modules over large multi-purpose implementations;
+- existing abstractions and repository conventions over parallel one-off patterns;
+- explicit data flow, state transitions, and invariants over hidden behavior;
+- descriptive names over clever or overly compressed code;
+- pure or side-effect-light helpers where practical;
+- stable interfaces and backward-compatible evolution where safe;
+- deterministic behavior and serialization;
+- regression tests close to the behavior they protect;
+- comments that explain non-obvious intent, constraints, or security reasoning rather than restating the code.
+
+Avoid:
+
+- unnecessary abstraction or indirection;
+- speculative generalization for hypothetical future requirements;
+- duplicated business/security logic across multiple modules;
+- magic constants or implicit conventions when a named constant/type/helper is clearer;
+- hidden mutable global state;
+- large functions that mix parsing, validation, state mutation, persistence, and presentation when those responsibilities can be separated cleanly;
+- compatibility shims with no explicit removal or support policy;
+- broad rewrites when a local, well-tested change solves the task safely.
+
+Before introducing a new abstraction, helper, dependency, configuration field, or compatibility layer, check whether an existing repository mechanism already serves that responsibility. Reuse or extend it when doing so keeps ownership clear and does not distort the abstraction.
+
+Do not optimize for fewer lines of code at the expense of readability, testability, debuggability, or explicit security semantics.
+
+## 17.2 Preserve local design consistency
+
+Before editing a subsystem:
+
+1. inspect the nearby implementation and tests;
+2. identify the existing ownership boundary and data flow;
+3. determine whether the file is generated or authoritative;
+4. follow established naming, typing, error-handling, serialization, and testing patterns unless there is a concrete reason to change them;
+5. keep unrelated cleanup out of the patch.
+
+If the existing design is poor but not necessary to change for the task, do not silently redesign it. Record the concern as deferred work when material.
+
+## 17.3 Clarify material uncertainty before coding
+
+If an uncertainty could materially change the architecture, public behavior, security semantics, compatibility, data model, dependency choice, or scope of the requested change, ask the user for clarification before implementing that decision.
+
+Examples that normally require clarification:
+
+- two plausible interpretations of the requested behavior would produce different user-visible or security-relevant results;
+- a change may break an existing public CLI/API/artifact/schema contract;
+- a migration or backward-compatibility policy is not specified;
+- the correct owner/module for substantial new behavior is ambiguous;
+- adding a new third-party dependency is optional rather than clearly necessary;
+- the requested change conflicts with an invariant or another explicit repository rule;
+- a destructive migration, large rewrite, or removal of supported behavior appears necessary;
+- the task depends on a product/security assumption that cannot be established from repository evidence.
+
+Do not interrupt the user for low-impact implementation details when the repository conventions, tests, or surrounding code provide a safe and obvious default. In those cases, choose the most conservative maintainable option and state the assumption in the completion report if it is material.
+
+Never resolve material ambiguity by silently choosing the fastest implementation.
+
+## 17.4 Refactoring discipline
 
 Avoid "cleanup" refactors that mix with security-sensitive behavior changes.
 
@@ -874,8 +941,13 @@ When multiple implementations are possible, prefer the option that is:
 2. easier to verify;
 3. deterministic;
 4. explicit about uncertainty;
-5. backward-compatible where safe;
-6. low-noise in generated diffs;
-7. easy to cover with regression tests.
+5. maintainable and easy to understand locally;
+6. cohesive with existing repository architecture and conventions;
+7. backward-compatible where safe;
+8. low-noise in generated diffs;
+9. easy to cover with regression tests;
+10. minimal in scope without becoming a brittle special case.
 
-For this repository, correctness and security audit integrity take precedence over convenience.
+If two reasonable options have materially different architectural, compatibility, or security consequences and the repository does not establish which one is intended, ask the user before choosing.
+
+For this repository, correctness and security audit integrity take precedence over convenience. Subject to those constraints, prefer long-term maintainability over short-term implementation speed.
