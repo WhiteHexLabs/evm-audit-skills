@@ -34,6 +34,25 @@ Names such as `RECON`, `SCREEN`, and `PROOF` are stable internal identifiers
 used by configuration, artifacts, and runtime control flow. The phase names
 above are the user-facing presentation layer.
 
+## Sequential and orchestrated execution
+
+The funnel above is the sequential shape: one executor advances every phase
+in order. It is also the exact workflow Codex runs, since the Codex runtime
+provides no in-session sub-agent dispatch.
+
+When the active runtime can dispatch sub-agents (ZCode custom worker agent
+types), the same funnel executes with a main agent plus one worker per
+Domain: Project Analysis, Domain Resolution, the shard merge, and the Final
+Report stay with the main agent; Domain Context, Initial Review, Deep Audit,
+and Vulnerability Validation for each Domain run in parallel on that
+Domain's worker. A merge barrier sits between context/screen work and deep
+review because every deep record must bind to the single review snapshot
+derived from the complete global results. Parallel execution changes who runs
+each phase, never the gates: every shard, ledger record, and report input
+passes the same validation as in sequential mode. See the Master Skill's
+Orchestration section and [Audit Runtime](audit-runtime.md) for the exact
+commands and locking model.
+
 ## 1. Project Analysis (`RECON`, `ROUTING`)
 
 Project Analysis builds a trustworthy picture of the project and uses it to

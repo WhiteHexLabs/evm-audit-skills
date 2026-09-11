@@ -293,6 +293,8 @@ Do not embed large amounts of executable runtime logic into Domain JSON.
 
 Contains user/model-facing Skill packages and generated checklist views.
 
+`skills/evm-audit-master/agents/` ships the ZCode custom worker agent templates (`evm-audit-worker-deep`, `evm-audit-worker-flash`); their pinned `model` values are the contract the model-profile validator checks against.
+
 Keep global audit safety rules centralized in the Master Skill / shared review contract.
 
 Domain Skills should contain domain-specific methodology, not repeated copies of generic global rules.
@@ -497,6 +499,8 @@ Multiple agents may work on independent Domains.
 
 Ledger operations must therefore be process-safe.
 
+Workers write only their own per-Domain shards and ledger; the global shard merge runs under an exclusive cross-process lock and must preserve exact-coverage semantics (no missing Domain, no duplicate canonical ID).
+
 Do not introduce a platform where locking silently becomes a no-op.
 
 If cross-platform locking differs by OS, tests must cover supported behavior.
@@ -569,11 +573,13 @@ Measure token/byte savings separately from correctness.
 
 ## 9.4 Model profile defaults
 
-Do not change default Codex stage-model assignments or reasoning effort unless the task explicitly asks for that change.
+The stage-model profile supports two providers (`codex`, `zcode`). Do not change default Codex stage-model assignments or reasoning effort unless the task explicitly asks for that change; the same applies to the default zcode worker assignments (controller stages on the main agent, `SCREEN`/`DEEP_REVIEW`/`PROOF` on `evm-audit-worker-deep`, `DOMAIN_CONTEXT` on `evm-audit-worker-flash`).
+
+A zcode stage entry's `agent` and `model` must stay consistent with the pinned model in the shipped worker agent template; the validator rejects mismatches.
 
 Model profile configuration is execution metadata, not security lineage.
 
-Do not claim that the runtime actually switches models unless a real supported runtime mechanism performs the switch.
+Do not claim that the runtime actually switches models unless a real supported runtime mechanism performs the switch. The controller never switches its own active model. ZCode worker dispatch through the Master Skill's orchestration is a real dispatch mechanism; Codex runs the same workflow sequentially.
 
 ---
 
