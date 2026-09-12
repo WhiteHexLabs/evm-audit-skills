@@ -2959,6 +2959,10 @@ def verify_poc(
             if runner == "custom":
                 result["reason"] = "custom PoC runners are not executed automatically"
                 result["error_code"] = "POC_VERIFICATION_FAILED"
+                # the loop-tail append is unreachable past `continue`; record
+                # the UNVERIFIED outcome so the receipt never overstates
+                # verification coverage
+                results.append(result)
                 continue
             resolved = _resolve_poc_command(finding, workspace, staged_sources)
             staged_solc = _stage_solc(

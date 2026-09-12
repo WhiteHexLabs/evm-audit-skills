@@ -197,6 +197,129 @@ class PocVerificationTests(unittest.TestCase):
             self.assertEqual(receipt["schema_version"], 2)
             self.assertEqual(receipt["results"][0]["staged_sources"][0]["sha256"], source_hash)
 
+    def test_custom_runner_result_is_recorded_not_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            build = base / "build"
+            run_dir = base / "run"
+            build.mkdir()
+            run_dir.mkdir()
+            exploit_bytes = b"contract ExploitTest { function testExploit() public {} }\n"
+            custom_bytes = b"contract CustomPoC { function reproduce() public {} }\n"
+            exploit = run_dir / "poc/Exploit.t.sol"
+            exploit.parent.mkdir()
+            exploit.write_bytes(exploit_bytes)
+            custom = run_dir / "poc/Custom.t.sol"
+            custom.write_bytes(custom_bytes)
+            foundry = _finding()
+            foundry["sources"][0]["sha256"] = hashlib.sha256(exploit_bytes).hexdigest()
+            manual = {
+                "canonical_id": "FINDING-2",
+                "severity": "High",
+                "runner": "custom",
+                "command": "manual reproduction against a local fork",
+                "sources": [
+                    {"path": "poc/Custom.t.sol", "sha256": hashlib.sha256(custom_bytes).hexdigest()}
+                ],
+                "entrypoint": "reproduce",
+                "expected_result": "manual reproduction drains funds",
+                "result_summary": "manual reproduction drains funds",
+            }
+            manifest = {
+                "routing_snapshot_id": HASH,
+                "feature_map": {"recon_context": {"build_root": str(build)}},
+            }
+            state = {"status": "COMPLETE_WITH_FINDINGS", "review_snapshot_id": HASH, "review_state_digest": HASH}
+            inputs = CurrentReportingInputs(
+                {"decisions": {"FINDING-1": {"severity": "High"}, "FINDING-2": {"severity": "High"}}},
+                b"severity",
+                {},
+                b"details",
+                {"findings": [foundry, manual]},
+                b"poc",
+                ("FINDING-1", "FINDING-2"),
+                HASH,
+            )
+            executable = base / "forge"
+            executable.write_bytes(b"trusted forge")
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+
+            def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+                return subprocess.CompletedProcess(command, 0, stdout=b"ok", stderr=b"")
+
+            with patch.object(controller, "_load_run", return_value=(controller.paths(run_dir), manifest, {})), \
+                    patch.object(controller, "status_run", return_value=state), \
+                    patch.object(controller, "load_current_reporting_inputs", return_value=inputs), \
+                    patch.object(controller, "_trusted_executable", return_value=executable), \
+                    patch.object(controller.subprocess, "run", side_effect=fake_run):
+                result = controller.verify_poc(ROOT, run_dir)
+            by_id = {entry["canonical_id"]: entry for entry in result["results"]}
+            self.assertEqual(set(by_id), {"FINDING-1", "FINDING-2"})
+            self.assertEqual(by_id["FINDING-1"]["state"], "PASSED")
+            self.assertEqual(by_id["FINDING-2"]["state"], "UNVERIFIED")
+            self.assertEqual(by_id["FINDING-2"]["runner"], "custom")
+            self.assertEqual(
+                by_id["FINDING-2"]["reason"], "custom PoC runners are not executed automatically"
+            )
+            self.assertEqual(by_id["FINDING-2"]["error_code"], "POC_VERIFICATION_FAILED")
+            self.assertNotEqual(result["state"], "PASSED")
+            self.assertEqual(result["state"], "UNVERIFIED")
+            receipt = json.loads((run_dir / "reviews/poc-verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["state"], "UNVERIFIED")
+            self.assertEqual(len(receipt["results"]), 2)
+
+    def test_custom_only_poc_evidence_produces_unverified_receipt_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            build = base / "build"
+            run_dir = base / "run"
+            build.mkdir()
+            run_dir.mkdir()
+            custom_bytes = b"contract CustomPoC { function reproduce() public {} }\n"
+            custom_source = run_dir / "poc/Custom.t.sol"
+            custom_source.parent.mkdir()
+            custom_source.write_bytes(custom_bytes)
+            manual = {
+                "canonical_id": "FINDING-2",
+                "severity": "Critical",
+                "runner": "custom",
+                "command": "manual reproduction against a local fork",
+                "sources": [
+                    {"path": "poc/Custom.t.sol", "sha256": hashlib.sha256(custom_bytes).hexdigest()}
+                ],
+                "entrypoint": "reproduce",
+                "expected_result": "manual reproduction drains funds",
+                "result_summary": "manual reproduction drains funds",
+            }
+            manifest = {
+                "routing_snapshot_id": HASH,
+                "feature_map": {"recon_context": {"build_root": str(build)}},
+            }
+            state = {"status": "COMPLETE_WITH_FINDINGS", "review_snapshot_id": HASH, "review_state_digest": HASH}
+            inputs = CurrentReportingInputs(
+                {"decisions": {"FINDING-2": {"severity": "Critical"}}},
+                b"severity",
+                {},
+                b"details",
+                {"findings": [manual]},
+                b"poc",
+                ("FINDING-2",),
+                HASH,
+            )
+            with patch.object(controller, "_load_run", return_value=(controller.paths(run_dir), manifest, {})), \
+                    patch.object(controller, "status_run", return_value=state), \
+                    patch.object(controller, "load_current_reporting_inputs", return_value=inputs), \
+                    patch.object(controller.subprocess, "run") as mock_run:
+                result = controller.verify_poc(ROOT, run_dir)
+            self.assertFalse(mock_run.called)
+            self.assertEqual(result["state"], "UNVERIFIED")
+            self.assertEqual(len(result["results"]), 1)
+            self.assertEqual(result["results"][0]["state"], "UNVERIFIED")
+            receipt = json.loads((run_dir / "reviews/poc-verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["state"], "UNVERIFIED")
+            self.assertEqual(receipt["runner"], "custom")
+            self.assertEqual(len(receipt["results"]), 1)
+
     @unittest.skipUnless(shutil.which("forge"), "Foundry is not installed")
     def test_real_foundry_executes_the_staged_poc_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
