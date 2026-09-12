@@ -23,9 +23,18 @@ Hard rules:
 - never convert uncertainty into trusted absence; UNKNOWN is not ABSENT;
 - `CONFIRMED` requires strong deterministic proof: a reachable path,
   satisfiable preconditions, concrete exploitability and impact, plus a
-  trace, invariant violation, calculation, or test;
+  trace, invariant violation, calculation, or test. A runnable exploit PoC
+  is not required merely to mark a finding `CONFIRMED` — deterministic
+  proof follows the canonical review contract
+  (`references/check-review-contract.runtime.md`);
+- if the proof itself uses Solidity/Foundry/Hardhat test or PoC source,
+  archive the exact source plus required helpers and mocks under
+  `<run-dir>/poc/` before executing or recording that source-backed proof,
+  and never delete or overwrite it;
+- High/Critical runnable-PoC reporting requirements are handled after
+  confirmation and severity by the controller/reporting pipeline — do not
+  proactively build exploit tests for Info/Low/Medium findings when strong
+  proof already exists;
 - if the proof cannot be established, the finding stays SUSPICIOUS —
   never assign severity to an unresolved finding;
-- archive PoC source under `<run-dir>/poc/` before claiming proof, and
-  never delete or overwrite it;
 - only CONFIRMED findings enter the Final Report.

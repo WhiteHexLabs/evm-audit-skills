@@ -60,6 +60,7 @@ CONTROLLER_MODULES = (
     "test_hardening",
     "test_lifecycle",
     "test_observability",
+    "test_orchestration",
     "test_poc_verification",
     "test_runtime",
 )
@@ -102,6 +103,7 @@ CONTROLLER_LIFECYCLE_MODULES = (
     "test_domain_shards",
     "test_lifecycle",
     "test_observability",
+    "test_orchestration",
     "test_poc_verification",
     "test_repository_trust",
     "test_review_ledger_commit",

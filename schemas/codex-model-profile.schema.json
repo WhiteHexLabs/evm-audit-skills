@@ -59,14 +59,14 @@
         "properties": {
           "stages": {
             "properties": {
-              "RECON": {"$ref": "#/$defs/zcode_stage"},
-              "ROUTING": {"$ref": "#/$defs/zcode_stage"},
-              "DOMAIN_RESOLUTION": {"$ref": "#/$defs/zcode_stage"},
-              "DOMAIN_CONTEXT": {"$ref": "#/$defs/zcode_stage"},
-              "SCREEN": {"$ref": "#/$defs/zcode_stage"},
-              "DEEP_REVIEW": {"$ref": "#/$defs/zcode_stage"},
-              "PROOF": {"$ref": "#/$defs/zcode_stage"},
-              "REPORT": {"$ref": "#/$defs/zcode_stage"}
+              "RECON": {"$ref": "#/$defs/zcode_controller_stage"},
+              "ROUTING": {"$ref": "#/$defs/zcode_controller_stage"},
+              "DOMAIN_RESOLUTION": {"$ref": "#/$defs/zcode_controller_stage"},
+              "DOMAIN_CONTEXT": {"$ref": "#/$defs/zcode_domain_context_stage"},
+              "SCREEN": {"$ref": "#/$defs/zcode_screen_stage"},
+              "DEEP_REVIEW": {"$ref": "#/$defs/zcode_deep_review_stage"},
+              "PROOF": {"$ref": "#/$defs/zcode_proof_stage"},
+              "REPORT": {"$ref": "#/$defs/zcode_controller_stage"}
             }
           }
         }
@@ -86,20 +86,27 @@
         "reasoning_effort": {"enum": ["none", "low", "medium", "high", "xhigh", "max"]}
       }
     },
-    "zcode_stage": {
+    "zcode_controller_stage": {
       "type": "object",
       "additionalProperties": false,
       "required": ["model", "thought_level", "agent"],
       "properties": {
         "model": {"enum": ["GLM-5.3", "GLM-5.3-Flash"]},
         "thought_level": {"enum": ["low", "high", "max", "default"]},
-        "agent": {
-          "oneOf": [
-            {"type": "null"},
-            {"enum": ["evm-audit-worker-flash", "evm-audit-worker-deep", "evm-audit-worker-proof"]}
-          ]
-        }
+        "agent": {"const": null}
       }
+    },
+    "zcode_domain_context_stage": {
+      "const": {"model": "GLM-5.3-Flash", "thought_level": "default", "agent": "evm-audit-worker-flash"}
+    },
+    "zcode_screen_stage": {
+      "const": {"model": "GLM-5.3", "thought_level": "high", "agent": "evm-audit-worker-deep"}
+    },
+    "zcode_deep_review_stage": {
+      "const": {"model": "GLM-5.3", "thought_level": "high", "agent": "evm-audit-worker-deep"}
+    },
+    "zcode_proof_stage": {
+      "const": {"model": "GLM-5.3", "thought_level": "max", "agent": "evm-audit-worker-proof"}
     }
   }
 }

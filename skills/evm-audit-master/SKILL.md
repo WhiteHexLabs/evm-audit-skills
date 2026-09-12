@@ -227,51 +227,79 @@ Execution modes:
 
   Never copy agent files into `~/.zcode/agents/` during an audit;
   installation is `install.sh`'s job, and a new session is required for the
-  definitions to register. Dispatch one worker per Domain with the agent
-  type named by the stage profile (`recommended_execution.agent`) as
-  parallel background agents; act on completion notifications, do not poll.
+  definitions to register. Dispatch one worker per Domain that has work in
+  the current stage, with the agent type named by the stage profile
+  (`recommended_execution.agent`), as parallel background agents; act on
+  completion notifications, do not poll.
 - **Codex or runtimes without sub-agent dispatch** (sequential): the main
   agent executes the same stage-aligned workflow inline, stage by stage,
   Domain by Domain. Do not fabricate parallel dispatch where the runtime
   provides no mechanism.
 
+The controller `next` call is the only stage transition: it alone advances
+the run state, renders the per-owner runtime views, and names the worker
+agent for the next wave through `recommended_execution`. A successful merge
+publishes stage artifacts but never advances the stage — never infer the
+next wave from a successful merge alone. Before every worker dispatch, fail
+closed unless all of these hold: the returned stage equals the expected
+stage; `recommended_execution.agent` is non-null and equals the shipped
+contract for that stage. If any check fails, stop instead of dispatching a
+guessed or fallback agent.
+
 Waves (a worker invocation never crosses a stage boundary — each agent type
 pins one model/thought-level contract):
 
 1. **Controller head.** `init` (Project Analysis), then `next` until Domain
-   Resolution is terminal.
-2. **Wave A — DOMAIN_CONTEXT** (`evm-audit-worker-flash`, one per Domain).
-   Each worker authors a context input `{"context": {...}}` covering exactly
-   its Domain's required context keys (every entry `KNOWN` or
-   `NOT_APPLICABLE`, never left `UNKNOWN`) and writes it with
+   Resolution is terminal and `next` returns `DOMAIN_CONTEXT`.
+2. **Wave A — DOMAIN_CONTEXT** (`evm-audit-worker-flash`, one per Domain
+   required for context). Each worker authors a context input
+   `{"context": {...}}` covering exactly its Domain's required context keys
+   (every entry `KNOWN` or `NOT_APPLICABLE`, never left `UNKNOWN`) and
+   writes it with
    `python3 <suite-root>/scripts/domain_shards.py write-context-shard --run-dir <run-dir> --domain <domain> --input <file>`.
+   Quiesce all workers before any controller operation.
 3. **Barrier A (controller only).** `domain_shards.py merge-context --run-dir <run-dir>`
-   writes the authoritative `reviews/domain-context.json`. Screen may start
-   only after this succeeds. (`domain_shards.py status` reports
-   `context_merge_ready`; a present-but-invalid shard is never ready.)
-4. **Wave B — SCREEN** (`evm-audit-worker-deep`, one per Domain). Each
-   worker authors a screen input `{"results": [...]}` covering exactly its
-   Domain's selected checks (`CANDIDATE` or `NOT_APPLICABLE_CONFIRMED` with
-   trusted-absence evidence) and writes it with `write-screen-shard` (same
-   CLI shape).
+   writes the authoritative `reviews/domain-context.json` (`status` reports
+   `context_merge_ready`; a present-but-invalid shard is never ready). Then
+   run `next` and require stage `SCREEN` with
+   `recommended_execution.agent == evm-audit-worker-deep`. Screen may start
+   only after both succeed.
+4. **Wave B — SCREEN** (`evm-audit-worker-deep`, one per shard-owner
+   Domain). Each worker authors a screen input `{"results": [...]}` covering
+   exactly its Domain's selected checks (`CANDIDATE` or
+   `NOT_APPLICABLE_CONFIRMED` with trusted-absence evidence) and writes it
+   with `write-screen-shard` (same CLI shape). Quiesce all workers.
 5. **Barrier B (controller only).** `domain_shards.py merge-screen --run-dir <run-dir>`
    requires the authoritative context, writes `reviews/screen-results.json`,
-   and derives the review snapshot. Deep review may start only after this
-   succeeds. (`merge-context` followed by `merge-screen` equals the combined
-   `merge` convenience command.)
-6. **Wave C — DEEP_REVIEW** (`evm-audit-worker-deep`, one per Domain). Each
-   worker appends only `DEEP_REVIEW` records to its own ledger
+   and derives the review snapshot (`merge-context` followed by
+   `merge-screen` equals the combined `merge` convenience command). Then run
+   `next`:
+   - `REPORT` → zero candidates: skip Deep Review and Proof, go to
+     reporting.
+   - `DEEP_REVIEW` → require `recommended_execution.agent ==
+     evm-audit-worker-deep` and that `runtime/deep-<owner-domain>.md` exists
+     for every owner Domain of the returned `pending` candidates.
+6. **Wave C — DEEP_REVIEW** (`evm-audit-worker-deep`): dispatch only the
+   owner Domains of the pending candidates returned by `next`, not
+   unconditionally one worker per Domain. Each worker appends only
+   `DEEP_REVIEW` records to its own ledger
    `<run-dir>/reviews/review-<domain>.jsonl` via
    `python3 <suite-root>/scripts/review_ledger.py --manifest <run-dir>/routing/manifest.json --screen-results <run-dir>/reviews/screen-results.json --domain-context <run-dir>/reviews/domain-context.json --ledger <run-dir>/reviews/review-<domain>.jsonl --append-record <record.json>`
    (add `--domain-resolution <run-dir>/reviews/domain-resolution.json` when
    Deferred Domains exist). Append-only, one record at a time; the ledger
-   validates revisions, lifecycle transitions, and snapshot binding.
-7. **Wave D — PROOF** (`evm-audit-worker-proof`, one per Domain with
-   SUSPICIOUS records). Same ledger CLI as wave C, but appending only
-   `PROOF` records that resolve prior SUSPICIOUS records against the
-   current review snapshot.
-8. **Controller tail.** When all workers have quiesced, run `next` to
-   confirm coverage, then `report`.
+   validates revisions, lifecycle transitions, and snapshot binding. Quiesce
+   all workers, then run `next`:
+   - `REPORT` → no `SUSPICIOUS` records: skip Proof, go to reporting.
+   - `PROOF` → require `recommended_execution.agent ==
+     evm-audit-worker-proof` and that the returned `runtime_views`
+     (`runtime/proof-<owner-domain>.md`) cover exactly the owner Domains of
+     the returned `pending` suspicious IDs.
+7. **Wave D — PROOF** (`evm-audit-worker-proof`): dispatch only the owner
+   Domains represented by the current proof views / pending suspicious IDs.
+   Same ledger CLI as wave C, but appending only `PROOF` records that
+   resolve prior SUSPICIOUS records against the current review snapshot.
+   Quiesce all workers, then run `next` and require `REPORT`.
+8. **Controller tail.** Complete the reporting inputs, then run `report`.
 
 Parallelism is across Domains within a stage; stage ordering stays
 deterministic. Worker hard rules (enforced by the agent templates and

@@ -352,6 +352,92 @@ class DomainShardsTests(unittest.TestCase):
             self.assertTrue(payload["context_merge_ready"])
             self.assertTrue(payload["screen_merge_ready"])
             self.assertTrue(payload["merge_ready"])
+            self.assertEqual(payload["global_domain_context"], {"present": True, "valid": True})
+
+    def test_status_gates_screen_readiness_on_authoritative_context(self) -> None:
+        """``status`` must diagnose the authoritative context with merge-screen's contract.
+
+        Mere existence of ``reviews/domain-context.json`` is not readiness:
+        every mutation below leaves ``screen_merge_ready`` false, the status
+        diagnostic explains why, and ``merge-screen`` rejects the same state.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = _make_run(directory)
+            _write_shards(run_dir, manifest, directory)
+            merged = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertEqual(merged.returncode, 0, merged.stderr)
+            context_path = run_dir / "reviews/domain-context.json"
+
+            def assert_invalid_context_rejected() -> dict[str, Any]:
+                status = _run_cli("scripts/domain_shards.py", "status", "--run-dir", str(run_dir))
+                self.assertEqual(status.returncode, 0, f"status must not crash: {status.stderr}")
+                payload = json.loads(status.stdout)
+                self.assertTrue(payload["context_merge_ready"])
+                self.assertFalse(payload["screen_merge_ready"], payload["global_domain_context"])
+                self.assertFalse(payload["merge_ready"])
+                diagnostic = payload["global_domain_context"]
+                self.assertFalse(diagnostic["valid"])
+                self.assertTrue(diagnostic["error"])
+                merge = _run_cli("scripts/domain_shards.py", "merge-screen", "--run-dir", str(run_dir))
+                self.assertNotEqual(merge.returncode, 0)
+                self.assertEqual(merge.stderr.strip().splitlines()[-1].removeprefix("ERROR: ").strip(), diagnostic["error"])
+                self.assertFalse((run_dir / "reviews/screen-results.json").exists())
+                return diagnostic
+
+            # Missing authoritative context.
+            valid_context = load_json(context_path)
+            context_path.unlink()
+            diagnostic = assert_invalid_context_rejected()
+            self.assertFalse(diagnostic["present"])
+            self.assertIn("run merge-context first", diagnostic["error"])
+
+            def restore() -> None:
+                context_path.write_text(json.dumps(valid_context) + "\n", encoding="utf-8")
+
+            # Malformed authoritative JSON.
+            context_path.write_text("{ not json", encoding="utf-8")
+            diagnostic = assert_invalid_context_rejected()
+            self.assertTrue(diagnostic["present"])
+
+            # Stale routing snapshot identity.
+            restore()
+            stale = load_json(context_path)
+            stale["routing_snapshot_id"] = "0" * 64
+            context_path.write_text(json.dumps(stale) + "\n", encoding="utf-8")
+            diagnostic = assert_invalid_context_rejected()
+            self.assertIn("mismatched routing_snapshot_id", diagnostic["error"])
+
+            # Wrong artifact identity digest.
+            restore()
+            foreign = load_json(context_path)
+            foreign["registry_sha256"] = "1" * 64
+            context_path.write_text(json.dumps(foreign) + "\n", encoding="utf-8")
+            diagnostic = assert_invalid_context_rejected()
+            self.assertIn("mismatched registry_sha256", diagnostic["error"])
+
+            # Unresolved required context.
+            restore()
+            unresolved = load_json(context_path)
+            domain_requirements = unresolved["domains"][DOMAINS[0]]
+            first_key = sorted(domain_requirements)[0]
+            domain_requirements[first_key]["status"] = "UNKNOWN"
+            domain_requirements[first_key].pop("value", None)
+            context_path.write_text(json.dumps(unresolved) + "\n", encoding="utf-8")
+            diagnostic = assert_invalid_context_rejected()
+            self.assertIn(f"{DOMAINS[0]}.{first_key}", diagnostic["error"])
+
+            # Restoring the merged content makes the exact same state ready
+            # again, and merge-context can republish it from the shards.
+            restore()
+            status = _run_cli("scripts/domain_shards.py", "status", "--run-dir", str(run_dir))
+            self.assertEqual(status.returncode, 0, status.stderr)
+            payload = json.loads(status.stdout)
+            self.assertTrue(payload["screen_merge_ready"])
+            self.assertTrue(payload["merge_ready"])
+            self.assertEqual(payload["global_domain_context"], {"present": True, "valid": True})
+            republished = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertEqual(republished.returncode, 0, republished.stderr)
 
 
 def _concurrent_worker(directory: str, run_dir: str, domain: str, mode: str) -> None:

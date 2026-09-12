@@ -17,6 +17,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PackagingTests(unittest.TestCase):
+    def test_proof_worker_keeps_deterministic_proof_independent_of_runnable_poc(self) -> None:
+        """The proof worker must not make runnable PoC a universal proof gate.
+
+        Deterministic proof (trace, invariant, calculation, test) is enough
+        for `CONFIRMED`; source retention is mandatory only when the proof
+        itself is source-backed; High/Critical PoC reporting stays with the
+        controller pipeline. This pins the worker template to the canonical
+        review contract instead of a stricter local lifecycle.
+        """
+        template = ROOT / "skills" / "evm-audit-master" / "agents" / "evm-audit-worker-proof.md"
+        text = template.read_text(encoding="utf-8")
+        self.assertIn("trace, invariant violation, calculation, or test", text)
+        self.assertNotIn("before claiming proof", text)
+        self.assertIn("if the proof itself uses", text)
+        self.assertIn("<run-dir>/poc/", text)
+        self.assertIn("check-review-contract.runtime.md", text)
+        self.assertIn("controller/reporting pipeline", text)
+
     def test_suite_symlinks_resolve_shared_runtime_files(self) -> None:
         with tempfile.TemporaryDirectory(prefix="evm-audit-suite-") as temp_dir:
             skills_root = Path(temp_dir) / "skills"

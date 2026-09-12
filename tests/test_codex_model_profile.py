@@ -12,14 +12,16 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from helpers import EMPTY_TARGET, ROOT, build_manifest, review_inputs
+from helpers import EMPTY_TARGET, ROOT, build_manifest, load_json, review_inputs
 from scripts.audit_artifacts import review_state_digest
 from scripts.audit_run import main as audit_run_main, recommended_execution
 from scripts.codex_model_profile import (
     DEFAULT_CODEX_MODEL_PROFILE,
     DEFAULT_ZCODE_MODEL_PROFILE,
     STAGES,
+    ZCODE_CONTROLLER_STAGES,
     ZCODE_WORKER_AGENTS,
+    ZCODE_WORKER_STAGES,
     compact_summary,
     default_profile,
     load_global_profile,
@@ -397,6 +399,65 @@ class CodexModelProfileTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "must contain exactly agent, model|for provider codex"):
             validate_profile(codex_with_agent)
+
+    def test_zcode_worker_stage_rejects_null_agent(self) -> None:
+        for stage in ZCODE_WORKER_STAGES:
+            invalid = default_profile("zcode")
+            invalid["stages"][stage]["agent"] = None
+            with self.assertRaisesRegex(ValueError, "zcode worker stage requires a configured worker agent", msg=stage):
+                validate_profile(invalid)
+
+    def test_zcode_controller_stage_rejects_worker_agent(self) -> None:
+        for stage in ZCODE_CONTROLLER_STAGES:
+            invalid = default_profile("zcode")
+            invalid["stages"][stage]["agent"] = "evm-audit-worker-deep"
+            with self.assertRaisesRegex(ValueError, "zcode controller stage must use agent null", msg=stage):
+                validate_profile(invalid)
+
+    def test_zcode_stage_role_sets_partition_stages(self) -> None:
+        self.assertEqual(ZCODE_CONTROLLER_STAGES | ZCODE_WORKER_STAGES, set(STAGES))
+        self.assertEqual(ZCODE_CONTROLLER_STAGES & ZCODE_WORKER_STAGES, set())
+
+    def test_zcode_schema_pins_worker_execution_triplets(self) -> None:
+        from scripts.audit_artifacts import validate_schema
+
+        expected_triplets = {
+            "DOMAIN_CONTEXT": ("DOMAIN_CONTEXT", "evm-audit-worker-flash"),
+            "SCREEN": ("SCREEN", "evm-audit-worker-deep"),
+            "DEEP_REVIEW": ("DEEP_REVIEW", "evm-audit-worker-deep"),
+            "PROOF": ("PROOF", "evm-audit-worker-proof"),
+        }
+        schema = load_json(ROOT / "schemas" / "codex-model-profile.schema.json")
+        for stage, (stage_name, agent) in expected_triplets.items():
+            contract = ZCODE_WORKER_AGENTS[agent]
+            triplet = {
+                "model": contract["model"],
+                "thought_level": contract["thought_level"],
+                "agent": agent,
+            }
+            self.assertEqual(
+                schema["$defs"][f"zcode_{stage_name.lower()}_stage"],
+                {"const": triplet},
+                stage,
+            )
+        # The canonical default is schema-valid and every shipped worker stage
+        # matches its exact executable triplet.
+        zcode = default_profile("zcode")
+        validate_schema(ROOT, "codex-model-profile.schema.json", zcode)
+        for stage, (_, agent) in expected_triplets.items():
+            self.assertEqual(zcode["stages"][stage]["agent"], agent, stage)
+        # A worker stage that drops its agent fails the schema exactly as it
+        # fails semantic validation.
+        invalid = default_profile("zcode")
+        invalid["stages"]["SCREEN"]["agent"] = None
+        with self.assertRaisesRegex(ValueError, "codex-model-profile.schema.json:stages.SCREEN"):
+            validate_schema(ROOT, "codex-model-profile.schema.json", invalid)
+        # A controller stage that names a worker agent fails the schema.
+        invalid = default_profile("zcode")
+        invalid["stages"]["REPORT"]["agent"] = "evm-audit-worker-deep"
+        with self.assertRaisesRegex(ValueError, "codex-model-profile.schema.json:stages.REPORT"):
+            validate_schema(ROOT, "codex-model-profile.schema.json", invalid)
+
 
     def test_zcode_worker_frontmatter_matches_execution_contracts(self) -> None:
         for name, contract in ZCODE_WORKER_AGENTS.items():

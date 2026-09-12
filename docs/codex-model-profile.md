@@ -39,14 +39,18 @@ is a trusted-absence decision, so triage quality is security-relevant.
 Use the defaults unless a stage needs a deliberate model or thinking-level
 override. The selected profile is stored as
 `config/codex-model-profile.json` inside the audit run and must contain every
-internal stage ID exactly once. A zcode stage entry is
-`{model, thought_level, agent}`; the validator enforces the full execution
-contract of the named worker against the shipped agent template — model,
-thought level, and the stages the agent is allowed to execute
+internal stage ID exactly once. Stage roles are enforced: the controller
+stages (Project Analysis, Domain Resolution, Final Report) must keep
+`agent: null`, and every worker stage must name a worker agent. A zcode stage
+entry is `{model, thought_level, agent}`; the validator enforces the full
+execution contract of the named worker against the shipped agent template —
+model, thought level, and the stages the agent is allowed to execute
 (`evm-audit-worker-flash` ⇒ Domain Context; `evm-audit-worker-deep` ⇒
 Screen + Deep Review; `evm-audit-worker-proof` ⇒ Proof) — so the profile
 cannot claim a contract its dispatched agent cannot run, and a worker
-dispatch never crosses a stage boundary into a different contract.
+dispatch never crosses a stage boundary into a different contract. Both the
+schema and the semantic validator reject a worker stage with
+`agent: null` or a controller stage with a worker agent.
 
 To set defaults for future audits, create and edit the user-level profile for
 your provider:

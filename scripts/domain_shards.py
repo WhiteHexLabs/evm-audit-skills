@@ -13,12 +13,16 @@ under an exclusive cross-process lock, stage by stage:
   file, merges screen shards with exact selected-check coverage, writes
   ``reviews/screen-results.json``, and derives the review snapshot.
 - ``merge`` is the compatibility convenience: context merge followed by
-  screen merge, committed together.
+  screen merge. Both outputs are built and validated before either write,
+  then replaced individually and atomically under one exclusive merge lock;
+  the pair is not a transactional two-file atomic commit.
 
 Shards bind to the routing snapshot: a shard authored against a different
 snapshot is rejected at write time and again at merge time. ``status``
-validates every present shard with the same contract as merge, so a
-present-but-invalid shard can never be reported as merge-ready.
+validates every present shard with the same contract as merge, and the
+authoritative domain context with the same contract as ``merge-screen``, so
+a present-but-invalid shard (or a stale/malformed authoritative context)
+can never be reported as merge-ready.
 """
 
 from __future__ import annotations
@@ -381,23 +385,48 @@ def _build_screen_merge(
     return merged_screen, candidates, review_snapshot, replaced, sorted(expected)
 
 
+def _diagnose_authoritative_context(
+    root: Path,
+    manifest: dict[str, Any],
+    values: dict[str, Any],
+    resolution: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Non-mutating authoritative-context check shared by status and merge-screen.
+
+    Keeping one implementation means ``status`` diagnoses readiness with the
+    exact contract ``merge-screen`` enforces, so the two can never drift.
+    """
+    if not values["domain_context"].exists():
+        return {
+            "present": False,
+            "valid": False,
+            "error": "authoritative reviews/domain-context.json is missing; run merge-context first",
+        }
+    try:
+        context = load_json(values["domain_context"])
+        unresolved = validate_domain_context(root, manifest, context, resolution)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        return {"present": True, "valid": False, "error": str(exc)}
+    if unresolved:
+        return {
+            "present": True,
+            "valid": False,
+            "error": "authoritative domain-context.json remains UNKNOWN for: "
+            + ", ".join(sorted(unresolved)),
+        }
+    return {"present": True, "valid": True}
+
+
 def _authoritative_context(
     root: Path,
     manifest: dict[str, Any],
     values: dict[str, Any],
     resolution: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    if not values["domain_context"].exists():
-        raise ValueError(
-            "merge-screen requires the authoritative reviews/domain-context.json; run merge-context first"
-        )
-    context = load_json(values["domain_context"])
-    unresolved = validate_domain_context(root, manifest, context, resolution)
-    if unresolved:
-        raise ValueError(
-            "authoritative domain-context.json remains UNKNOWN for: " + ", ".join(sorted(unresolved))
-        )
-    return context
+    diagnostic = _diagnose_authoritative_context(root, manifest, values, resolution)
+    if not diagnostic["valid"]:
+        raise ValueError(diagnostic["error"])
+    return load_json(values["domain_context"])
 
 
 def merge_context(root: Path, run_dir: Path, *, force: bool = False) -> dict[str, Any]:
@@ -446,6 +475,10 @@ def merge_shards(root: Path, run_dir: Path, *, force: bool = False) -> dict[str,
         merged_screen, candidates, review_snapshot, screen_replaced, screen_domains = _build_screen_merge(
             root, run_dir, manifest, values, resolution, merged_context, force=force
         )
+        # Both outputs are fully built and validated above, so an ordinary
+        # validation failure changes neither file. The two replacements are
+        # each atomic but sequential: this is not a transactional commit
+        # across the pair.
         atomic_write_json(values["domain_context"], merged_context)
         atomic_write_json(values["screen_results"], merged_screen)
     return {
@@ -492,11 +525,13 @@ def shard_status(root: Path, run_dir: Path) -> dict[str, Any]:
     context_entries, missing_context, invalid_context = diagnose(
         "context", _context_domains(manifest, resolution), _validate_context_shard
     )
+    context_diagnostic = _diagnose_authoritative_context(root, manifest, values, resolution)
     context_merge_ready = not missing_context and not invalid_context
     screen_merge_ready = (
         not missing_screen
         and not invalid_screen
-        and values["domain_context"].exists()
+        and context_diagnostic["present"]
+        and context_diagnostic["valid"]
     )
     return {
         "command": "status",
@@ -510,6 +545,7 @@ def shard_status(root: Path, run_dir: Path) -> dict[str, Any]:
         "missing_context_shards": missing_context,
         "invalid_screen_shards": invalid_screen,
         "invalid_context_shards": invalid_context,
+        "global_domain_context": context_diagnostic,
         "global_domain_context_present": values["domain_context"].exists(),
         "global_screen_results_present": values["screen_results"].exists(),
     }

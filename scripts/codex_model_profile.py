@@ -7,7 +7,9 @@ main agent plus custom worker agent types with ``thoughtLevel`` contracts).
 
 ZCode worker execution contracts are pinned per custom-agent definition:
 one agent type = one {model, thought_level} pair = a fixed set of allowed
-stages. The validator enforces that a profile stage entry never claims a
+stages. Stage roles are enforced: controller stages must keep ``agent: null``
+and worker stages must name a worker agent whose pinned contract can execute
+the stage. The validator enforces that a profile stage entry never claims a
 contract its dispatched agent cannot execute.
 """
 
@@ -74,6 +76,14 @@ ZCODE_WORKER_AGENTS: dict[str, dict[str, Any]] = {
     },
 }
 ZCODE_AGENTS = tuple(ZCODE_WORKER_AGENTS)
+
+# Controller stages run on the main session (agent null, handoff
+# recommendations only); worker stages must name a dispatched worker agent.
+ZCODE_CONTROLLER_STAGES = frozenset({"RECON", "ROUTING", "DOMAIN_RESOLUTION", "REPORT"})
+ZCODE_WORKER_STAGES = frozenset({"DOMAIN_CONTEXT", "SCREEN", "DEEP_REVIEW", "PROOF"})
+if ZCODE_CONTROLLER_STAGES | ZCODE_WORKER_STAGES != set(STAGES) or ZCODE_CONTROLLER_STAGES & ZCODE_WORKER_STAGES:
+    raise RuntimeError("zcode controller and worker stage sets must partition STAGES")
+
 PROVIDER_MODELS = {"codex": CODEX_MODELS, "zcode": ZCODE_MODELS}
 # codex stages carry {model, reasoning_effort}; zcode stages carry
 # {model, thought_level, agent} (agent = worker type, null on controller stages).
@@ -140,8 +150,12 @@ def _validate_zcode_stage(stage: str, entry: dict[str, Any]) -> None:
             f"supported levels are {', '.join(ZCODE_MODEL_THOUGHT_LEVELS[model])}"
         )
     agent = entry["agent"]
-    if agent is None:
+    if stage in ZCODE_CONTROLLER_STAGES:
+        if agent is not None:
+            raise ValueError(f"{stage}: zcode controller stage must use agent null")
         return
+    if agent is None:
+        raise ValueError(f"{stage}: zcode worker stage requires a configured worker agent")
     if agent not in ZCODE_WORKER_AGENTS:
         raise ValueError(f"{stage}: invalid zcode agent {agent!r}")
     contract = ZCODE_WORKER_AGENTS[agent]
