@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Repository: `iavl/evm-audit-skills-standalone`
+Repository: `iavl/evm-audit-skills`
 
 This file defines the persistent engineering rules for AI agents (Codex and similar tools) working in this repository.
 
