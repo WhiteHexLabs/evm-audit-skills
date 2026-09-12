@@ -440,6 +440,81 @@ class DomainShardsTests(unittest.TestCase):
             self.assertEqual(republished.returncode, 0, republished.stderr)
 
 
+    def test_status_gates_context_readiness_on_unresolved_required_context(self) -> None:
+        """``status`` must predict merge-context's outcome from the shard content.
+
+        A schema-valid shard that leaves a required key UNKNOWN - or one that
+        only fails the merged-artifact validation - is not merge-ready, and
+        ``status`` must agree with the merge that rejects it.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = _make_run(directory)
+            _write_shards(run_dir, manifest, directory)
+            _, context_inputs = _worker_inputs(manifest)
+            domain = sorted(context_inputs)[0]
+            key = sorted(context_inputs[domain])[0]
+            evidence = [{"kind": "scope", "location": "fixture", "reason": "complete scope"}]
+
+            def rewrite_shard(entry: dict[str, Any]) -> None:
+                source = directory / f"context-{domain}-edited.json"
+                source.write_text(
+                    json.dumps({"context": {**context_inputs[domain], key: entry}}) + "\n",
+                    encoding="utf-8",
+                )
+                result = _run_cli(
+                    "scripts/domain_shards.py", "write-context-shard",
+                    "--run-dir", str(run_dir), "--domain", domain, "--input", str(source),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            def status_payload() -> dict[str, Any]:
+                status = _run_cli("scripts/domain_shards.py", "status", "--run-dir", str(run_dir))
+                self.assertEqual(status.returncode, 0, f"status must not crash: {status.stderr}")
+                return json.loads(status.stdout)
+
+            # A required key left UNKNOWN is accepted at write time (truthful
+            # worker output) but can never be reported merge-ready.
+            rewrite_shard({"status": "UNKNOWN"})
+            payload = status_payload()
+            self.assertFalse(payload["context_merge_ready"], payload["context_merge_diagnostic"])
+            self.assertFalse(payload["merge_ready"])
+            self.assertEqual(payload["unresolved_context"], [f"{domain}.{key}"])
+            entry = next(item for item in payload["context_shards"] if item["owner_domain"] == domain)
+            self.assertTrue(entry["valid"], "an UNKNOWN shard is valid data, not a malformed shard")
+            self.assertEqual(entry["unresolved_required"], [f"{domain}.{key}"])
+            self.assertIn(
+                f"merged context remains UNKNOWN for: {domain}.{key}",
+                payload["context_merge_diagnostic"]["error"],
+            )
+            merge = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertNotEqual(merge.returncode, 0)
+            self.assertIn(f"merged context remains UNKNOWN for: {domain}.{key}", merge.stderr)
+            self.assertFalse((run_dir / "reviews/domain-context.json").exists())
+
+            # A KNOWN entry with an empty value passes the shard schema but
+            # fails the merged-artifact validation; status stays diagnostic.
+            rewrite_shard({"status": "KNOWN", "value": "", "evidence": evidence})
+            payload = status_payload()
+            self.assertFalse(payload["context_merge_ready"], payload["context_merge_diagnostic"])
+            self.assertIn(
+                f"{domain}.{key} KNOWN requires value and evidence",
+                payload["context_merge_diagnostic"]["error"],
+            )
+            merge = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertNotEqual(merge.returncode, 0)
+            self.assertIn(f"{domain}.{key} KNOWN requires value and evidence", merge.stderr)
+
+            # Resolving the key restores readiness and merge-context succeeds.
+            rewrite_shard({"status": "KNOWN", "value": "fixture", "evidence": evidence})
+            payload = status_payload()
+            self.assertTrue(payload["context_merge_ready"], payload["context_merge_diagnostic"])
+            self.assertEqual(payload["unresolved_context"], [])
+            self.assertTrue(all("unresolved_required" not in item for item in payload["context_shards"]))
+            republished = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertEqual(republished.returncode, 0, republished.stderr)
+
+
 def _concurrent_worker(directory: str, run_dir: str, domain: str, mode: str) -> None:
     if mode == "screen":
         _, _, _, manifest = build_manifest(domains=DOMAINS)

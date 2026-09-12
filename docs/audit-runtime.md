@@ -75,9 +75,10 @@ deterministic. Dispatch mechanics (ZCode custom worker agent types, Codex
 sequential fallback) are specified in the Master Skill's Orchestration
 section; `domain_shards.py status` validates every present shard with the
 same contract as merge, and the authoritative domain context with the same
-contract as `merge-screen`, reporting `context_merge_ready` /
+contract as ``merge-screen``, reporting `context_merge_ready` /
 `screen_merge_ready` / `merge_ready`, so a present-but-invalid shard (or a
-stale/malformed authoritative context) is never reported as ready.
+stale/malformed authoritative context, or a shard whose required context
+remains UNKNOWN) is never reported as ready.
 
 Automatic build-root discovery is bounded to the acquisition root. Use
 `--acquisition-root` for a trusted source boundary or pass `--build-root`
@@ -341,7 +342,10 @@ schema-validated against `schemas/{screen-shard,domain-context-shard}.schema.jso
 and bind to the routing snapshot. `status` validates every present shard and
 the authoritative domain context, and reports stage-aware readiness
 (`context_merge_ready`, `screen_merge_ready`, `merge_ready`) with a
-`global_domain_context` diagnostic; a present-but-invalid shard or a
+`global_domain_context` diagnostic; context readiness additionally re-runs
+the exact merge-context assembly on the shards, so a present-but-invalid
+shard, a shard whose required context remains UNKNOWN (surfaced per entry as
+`unresolved_required` and in the `context_merge_diagnostic`), or a
 stale/malformed authoritative context is reported with its diagnostic and
 never counts as ready. `merge-context` writes the authoritative
 `reviews/domain-context.json`; `merge-screen` requires it, writes

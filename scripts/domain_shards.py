@@ -21,8 +21,9 @@ Shards bind to the routing snapshot: a shard authored against a different
 snapshot is rejected at write time and again at merge time. ``status``
 validates every present shard with the same contract as merge, and the
 authoritative domain context with the same contract as ``merge-screen``, so
-a present-but-invalid shard (or a stale/malformed authoritative context)
-can never be reported as merge-ready.
+a present-but-invalid shard (or a stale/malformed authoritative context, or
+a shard whose required context remains UNKNOWN when merged) can never be
+reported as merge-ready.
 """
 
 from __future__ import annotations
@@ -291,15 +292,17 @@ def _guard_replace(existing_path: Path, new_value: dict[str, Any], template_valu
     return True
 
 
-def _build_context_merge(
+def _assemble_context_merge(
     root: Path,
     run_dir: Path,
     manifest: dict[str, Any],
-    values: dict[str, Any],
     resolution: dict[str, Any] | None,
-    *,
-    force: bool,
-) -> tuple[dict[str, Any], bool, list[str]]:
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Load and validate every context shard and build the merged artifact.
+
+    Pure with respect to the run directory. Shared by merge-context and shard
+    status so readiness can never drift from the merge contract.
+    """
     expected = _context_domains(manifest, resolution)
     merged_domains: dict[str, dict[str, Any]] = {}
     for domain in sorted(expected):
@@ -320,10 +323,25 @@ def _build_context_merge(
         "compilation_input_digest": audit["compilation_input_digest"],
         "domains": merged_domains,
     }
-    unresolved_context = validate_domain_context(root, manifest, merged_context, resolution)
+    unresolved_context = sorted(validate_domain_context(root, manifest, merged_context, resolution))
+    return merged_context, unresolved_context, sorted(expected)
+
+
+def _build_context_merge(
+    root: Path,
+    run_dir: Path,
+    manifest: dict[str, Any],
+    values: dict[str, Any],
+    resolution: dict[str, Any] | None,
+    *,
+    force: bool,
+) -> tuple[dict[str, Any], bool, list[str]]:
+    merged_context, unresolved_context, expected = _assemble_context_merge(
+        root, run_dir, manifest, resolution
+    )
     if unresolved_context:
         raise ValueError(
-            "merged context remains UNKNOWN for: " + ", ".join(sorted(unresolved_context))
+            "merged context remains UNKNOWN for: " + ", ".join(unresolved_context)
         )
     replaced = _guard_replace(
         values["domain_context"],
@@ -332,7 +350,7 @@ def _build_context_merge(
         force,
         "reviews/domain-context.json",
     )
-    return merged_context, replaced, sorted(expected)
+    return merged_context, replaced, expected
 
 
 def _build_screen_merge(
@@ -525,8 +543,38 @@ def shard_status(root: Path, run_dir: Path) -> dict[str, Any]:
     context_entries, missing_context, invalid_context = diagnose(
         "context", _context_domains(manifest, resolution), _validate_context_shard
     )
+    # Predict merge-context's outcome with the same assembly it runs, so a
+    # structurally valid shard that leaves required context UNKNOWN (or fails
+    # the merged-artifact validation) can never be reported merge-ready.
+    unresolved_context: list[str] = []
+    assembly_error: str | None = None
+    if not missing_context and not invalid_context:
+        try:
+            _, unresolved_context, _ = _assemble_context_merge(root, run_dir, manifest, resolution)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            assembly_error = str(exc)
+    for entry in context_entries:
+        owned = sorted(
+            key for key in unresolved_context if key.startswith(f"{entry['owner_domain']}.")
+        )
+        if owned:
+            entry["unresolved_required"] = owned
+    context_merge_diagnostic: dict[str, Any] = {"ready": False}
+    if assembly_error is not None:
+        context_merge_diagnostic["error"] = assembly_error
+    elif unresolved_context:
+        context_merge_diagnostic["error"] = (
+            "merged context remains UNKNOWN for: " + ", ".join(unresolved_context)
+        )
+    else:
+        context_merge_diagnostic["ready"] = True
     context_diagnostic = _diagnose_authoritative_context(root, manifest, values, resolution)
-    context_merge_ready = not missing_context and not invalid_context
+    context_merge_ready = (
+        not missing_context
+        and not invalid_context
+        and assembly_error is None
+        and not unresolved_context
+    )
     screen_merge_ready = (
         not missing_screen
         and not invalid_screen
@@ -545,6 +593,8 @@ def shard_status(root: Path, run_dir: Path) -> dict[str, Any]:
         "missing_context_shards": missing_context,
         "invalid_screen_shards": invalid_screen,
         "invalid_context_shards": invalid_context,
+        "unresolved_context": unresolved_context,
+        "context_merge_diagnostic": context_merge_diagnostic,
         "global_domain_context": context_diagnostic,
         "global_domain_context_present": values["domain_context"].exists(),
         "global_screen_results_present": values["screen_results"].exists(),
