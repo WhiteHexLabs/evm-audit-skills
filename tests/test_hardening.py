@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import errno
 import json
+import multiprocessing
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from scripts.audit_artifacts import (
+    atomic_write_json,
     canonical_sha256,
     check_body_hash,
     derive_review_snapshot_id,
@@ -33,6 +36,21 @@ from scripts.recon import main as recon_main
 
 def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _sharing_violation() -> PermissionError:
+    error = PermissionError("simulated Windows sharing violation")
+    error.winerror = 32
+    return error
+
+
+def _atomic_write_worker(path: str, value: dict, writes: int, result_queue) -> None:
+    try:
+        for _ in range(writes):
+            atomic_write_json(Path(path), value)
+        result_queue.put("ok")
+    except BaseException as exc:  # pragma: no cover - asserted by the parent
+        result_queue.put(repr(exc))
 
 
 class HardeningTests(unittest.TestCase):
@@ -109,6 +127,85 @@ class HardeningTests(unittest.TestCase):
             with patch("scripts.audit_artifacts.os.fsync", side_effect=OSError(errno.EIO, "io")):
                 with self.assertRaisesRegex(OSError, "io"):
                     fsync_parent_directory(path)
+
+    def test_atomic_write_retries_windows_sharing_violations(self) -> None:
+        """A sharing-violation os.replace is retried and still lands atomically."""
+        real_replace = os.replace
+        state = {"failures": 0}
+
+        def replace_with_transient_conflict(source, target):
+            state["failures"] += 1
+            if state["failures"] <= 2:
+                raise _sharing_violation()
+            return real_replace(source, target)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            with patch("scripts.audit_artifacts.os.replace", side_effect=replace_with_transient_conflict):
+                atomic_write_json(path, {"value": 1})
+            self.assertEqual(state["failures"], 3)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"value": 1})
+            self.assertEqual(
+                [item.name for item in path.parent.iterdir()],
+                [path.name],
+                "a successful retry must not leak temporary files",
+            )
+
+        # Permission problems that are not sharing violations fail immediately.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            with patch("scripts.audit_artifacts.os.replace", side_effect=PermissionError(13, "real permission problem")):
+                with self.assertRaisesRegex(PermissionError, "real permission problem"):
+                    atomic_write_json(path, {"value": 1})
+            self.assertEqual([item.name for item in path.parent.iterdir()], [], "a failed write must not leak temporary files")
+
+    def test_atomic_write_replace_retry_exhaustion_preserves_original_error(self) -> None:
+        """Exhausting the sharing-violation budget re-raises and cleans up."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "artifact.json"
+            path.write_text("previous\n", encoding="utf-8")
+            with patch("scripts.audit_artifacts.os.replace", side_effect=_sharing_violation()), patch(
+                "scripts.audit_artifacts.ATOMIC_REPLACE_RETRY_SECONDS", 0.0
+            ), patch("scripts.audit_artifacts.ATOMIC_REPLACE_RETRY_INTERVAL", 0.0):
+                with self.assertRaisesRegex(PermissionError, "simulated Windows sharing violation"):
+                    atomic_write_json(path, {"value": 1})
+            self.assertEqual(
+                [item.name for item in path.parent.iterdir()],
+                [path.name],
+                "the failed write must leave the previous artifact and no temporaries",
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), "previous\n")
+
+    def test_concurrent_atomic_writes_never_corrupt_or_leak_temporaries(self) -> None:
+        """Two processes replacing one artifact always leave a valid file.
+
+        On Windows this exercises the real sharing-violation retry path; on
+        POSIX it pins the same integrity invariant. Mirrors concurrent
+        ``status_run`` callers re-deriving ``audit-state.json``.
+        """
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit-state.json"
+            payloads = [{"writer": index} for index in range(2)]
+            result_queue = context.Queue()
+            workers = [
+                context.Process(target=_atomic_write_worker, args=(str(path), payload, 40, result_queue))
+                for payload in payloads
+            ]
+            for worker in workers:
+                worker.start()
+            outcomes = [result_queue.get(timeout=60) for _ in workers]
+            for worker in workers:
+                worker.join(timeout=60)
+                self.assertEqual(worker.exitcode, 0)
+            self.assertEqual(outcomes, ["ok", "ok"])
+            final = json.loads(path.read_text(encoding="utf-8"))
+            self.assertIn(final, payloads)
+            self.assertEqual(
+                [item.name for item in path.parent.iterdir()],
+                [path.name],
+                "concurrent replacements must not leak temporary files",
+            )
 
     def test_bundle_rejects_missing_required_high_issue_candidate(self) -> None:
         _, _, _, manifest = build_manifest()

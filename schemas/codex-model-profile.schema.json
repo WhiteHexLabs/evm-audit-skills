@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:evm-audit-skills:codex-model-profile:v1",
+  "$id": "urn:evm-audit-skills:codex-model-profile:v3",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "provider", "profile_name", "stages"],
   "properties": {
-    "schema_version": {"const": 1},
-    "provider": {"const": "codex"},
+    "schema_version": {"const": 3},
+    "provider": {"enum": ["codex", "zcode"]},
     "profile_name": {"type": "string", "minLength": 1},
     "stages": {
       "type": "object",
@@ -33,8 +33,51 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {"properties": {"provider": {"const": "codex"}}},
+      "then": {
+        "properties": {
+          "stages": {
+            "properties": {
+              "RECON": {"$ref": "#/$defs/codex_stage"},
+              "ROUTING": {"$ref": "#/$defs/codex_stage"},
+              "DOMAIN_RESOLUTION": {"$ref": "#/$defs/codex_stage"},
+              "DOMAIN_CONTEXT": {"$ref": "#/$defs/codex_stage"},
+              "SCREEN": {"$ref": "#/$defs/codex_stage"},
+              "DEEP_REVIEW": {"$ref": "#/$defs/codex_stage"},
+              "PROOF": {"$ref": "#/$defs/codex_stage"},
+              "REPORT": {"$ref": "#/$defs/codex_stage"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"provider": {"const": "zcode"}}},
+      "then": {
+        "properties": {
+          "stages": {
+            "properties": {
+              "RECON": {"$ref": "#/$defs/zcode_controller_stage"},
+              "ROUTING": {"$ref": "#/$defs/zcode_controller_stage"},
+              "DOMAIN_RESOLUTION": {"$ref": "#/$defs/zcode_controller_stage"},
+              "DOMAIN_CONTEXT": {"$ref": "#/$defs/zcode_domain_context_stage"},
+              "SCREEN": {"$ref": "#/$defs/zcode_screen_stage"},
+              "DEEP_REVIEW": {"$ref": "#/$defs/zcode_deep_review_stage"},
+              "PROOF": {"$ref": "#/$defs/zcode_proof_stage"},
+              "REPORT": {"$ref": "#/$defs/zcode_controller_stage"}
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "stage": {
+      "type": "object"
+    },
+    "codex_stage": {
       "type": "object",
       "additionalProperties": false,
       "required": ["model", "reasoning_effort"],
@@ -42,6 +85,28 @@
         "model": {"enum": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]},
         "reasoning_effort": {"enum": ["none", "low", "medium", "high", "xhigh", "max"]}
       }
+    },
+    "zcode_controller_stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "thought_level", "agent"],
+      "properties": {
+        "model": {"enum": ["GLM-5.3", "GLM-5.3-Flash"]},
+        "thought_level": {"enum": ["low", "high", "max", "default"]},
+        "agent": {"const": null}
+      }
+    },
+    "zcode_domain_context_stage": {
+      "const": {"model": "GLM-5.3-Flash", "thought_level": "default", "agent": "evm-audit-worker-flash"}
+    },
+    "zcode_screen_stage": {
+      "const": {"model": "GLM-5.3", "thought_level": "high", "agent": "evm-audit-worker-deep"}
+    },
+    "zcode_deep_review_stage": {
+      "const": {"model": "GLM-5.3", "thought_level": "high", "agent": "evm-audit-worker-deep"}
+    },
+    "zcode_proof_stage": {
+      "const": {"model": "GLM-5.3", "thought_level": "max", "agent": "evm-audit-worker-proof"}
     }
   }
 }

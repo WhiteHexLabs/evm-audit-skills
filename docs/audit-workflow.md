@@ -34,6 +34,35 @@ Names such as `RECON`, `SCREEN`, and `PROOF` are stable internal identifiers
 used by configuration, artifacts, and runtime control flow. The phase names
 above are the user-facing presentation layer.
 
+## Sequential and orchestrated execution
+
+The funnel above is the sequential shape: one executor advances every phase
+in order. It is also the exact workflow Codex runs, since the Codex runtime
+provides no in-session sub-agent dispatch.
+
+When the active runtime can dispatch sub-agents (ZCode custom worker agent
+types), the same funnel executes with a main agent plus one worker per
+Domain per stage: Project Analysis, Domain Resolution, the stage merges, and
+the Final Report stay with the main agent; each of Domain Context, Initial
+Review, Deep Audit, and Vulnerability Validation runs as its own stage wave,
+with one worker per Domain dispatched to the agent type configured for that
+stage. Two controller-owned merge barriers sit between context and screen
+work and between screen and deep review, because every deep record must bind
+to the single review snapshot derived from the complete global results. The
+controller's `next` call is the transition barrier between waves: it alone
+advances the stage, renders the per-owner runtime views, and names the next
+wave's worker agent — a successful merge publishes artifacts but never
+advances the stage. Zero-candidate runs return `REPORT` directly after the
+screen barrier, and runs with no `SUSPICIOUS` records return `REPORT`
+without a Proof wave. A worker invocation never crosses a stage boundary —
+each custom agent pins exactly one model/thought-level contract.
+Parallelism is across Domains
+within a stage; stage ordering stays deterministic. Parallel execution
+changes who runs each phase, never the gates: every shard, ledger record,
+and report input passes the same validation as in sequential mode. See the
+Master Skill's Orchestration section and [Audit Runtime](audit-runtime.md)
+for the exact commands and locking model.
+
 ## 1. Project Analysis (`RECON`, `ROUTING`)
 
 Project Analysis builds a trustworthy picture of the project and uses it to

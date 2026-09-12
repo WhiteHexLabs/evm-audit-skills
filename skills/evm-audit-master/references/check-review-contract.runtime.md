@@ -10,6 +10,19 @@ deterministic proof such as a trace, invariant violation, calculation, or test.
 A runnable exploit PoC is a separate post-confirmation reporting requirement
 for final-severity `High` and `Critical` findings only.
 
+## Executors
+
+This contract is executor-agnostic: it binds equally to a single sequential
+agent and to per-Domain worker agents running in parallel. A worker writes
+only its own Domain's shard (`reviews/shards/<kind>-<domain>.json`, via
+`scripts/domain_shards.py`) and its own ledger
+(`reviews/review-<owner-domain>.jsonl`). Shared global artifacts —
+`screen-results.json`, `domain-context.json`, `audit-state.json`, report
+outputs — are written exclusively by the controller (merge barrier, `next`,
+`status`, `report`, `verify-poc`), never by a worker. Parallel execution
+never weakens the gates below: every record still validates against the same
+snapshot binding, revision, lifecycle, and evidence rules.
+
 ## Terminal statuses
 
 - `NOT_APPLICABLE`: concrete scope/code evidence proves the selected check cannot apply.

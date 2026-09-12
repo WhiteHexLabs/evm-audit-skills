@@ -34,6 +34,9 @@ PLATFORM_TESTS = frozenset(
         "test_audit_run.AuditRunTests.test_concurrent_report_publications_leave_pointer_and_convenience_copies_consistent",
         "test_audit_run.AuditRunTests.test_report_lock_does_not_silently_disable_on_windows",
         "test_audit_run.AuditRunTests.test_report_lock_is_cross_process",
+        "test_domain_shards.DomainShardsConcurrencyTests.test_duplicate_same_domain_shard_writes_are_atomic",
+        "test_domain_shards.DomainShardsConcurrencyTests.test_parallel_shard_writes_then_concurrent_merge_attempts_stay_consistent",
+        "test_hardening.HardeningTests.test_concurrent_atomic_writes_never_corrupt_or_leak_temporaries",
         "test_runtime.RuntimeTests.test_ledger_does_not_silently_disable_locking",
         "test_runtime.RuntimeTests.test_multiprocess_ledger_writes_are_serialized_and_durable",
     }
@@ -41,6 +44,7 @@ PLATFORM_TESTS = frozenset(
 
 FAST_MODULES = (
     "test_generation",
+    "test_install_sh",
     "test_knowledge",
     "test_limits",
     "test_plan_hardening",
@@ -53,9 +57,11 @@ FAST_MODULES = (
 CONTROLLER_MODULES = (
     "test_audit_run",
     "test_codex_model_profile",
+    "test_domain_shards",
     "test_hardening",
     "test_lifecycle",
     "test_observability",
+    "test_orchestration",
     "test_poc_verification",
     "test_runtime",
 )
@@ -95,8 +101,10 @@ CONTROLLER_REPORTING_PUBLICATION_NAMES = frozenset(
 )
 CONTROLLER_LIFECYCLE_MODULES = (
     "test_codex_model_profile",
+    "test_domain_shards",
     "test_lifecycle",
     "test_observability",
+    "test_orchestration",
     "test_poc_verification",
     "test_repository_trust",
     "test_review_ledger_commit",
@@ -110,7 +118,7 @@ SLITHER_MODULES = (
     "test_recon",
 )
 
-PLATFORM_MODULES = ("test_audit_run", "test_runtime")
+PLATFORM_MODULES = ("test_audit_run", "test_hardening", "test_runtime")
 
 
 def _tests(suite: unittest.TestSuite) -> Iterable[unittest.case.TestCase]:

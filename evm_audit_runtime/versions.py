@@ -10,8 +10,9 @@ SCHEMA_VERSIONS = {
     "code-context-query": 5,
     "code-context-benchmark": 2,
     "code-index": 2,
-    "codex-model-profile": 1,
+    "codex-model-profile": 3,
     "domain-context": 3,
+    "domain-context-shard": 1,
     "domain-resolution": 2,
     "environment-context": 1,
     "feature-detectors": 1,
@@ -29,6 +30,7 @@ SCHEMA_VERSIONS = {
     "repository-trust": 1,
     "runtime-metadata": 1,
     "screen-results": 2,
+    "screen-shard": 1,
     "severity-decisions": 2,
 }
 
@@ -39,6 +41,7 @@ CODE_CONTEXT_BENCHMARK_VERSION = SCHEMA_VERSIONS["code-context-benchmark"]
 CODE_INDEX_VERSION = SCHEMA_VERSIONS["code-index"]
 CODEX_MODEL_PROFILE_VERSION = SCHEMA_VERSIONS["codex-model-profile"]
 DOMAIN_CONTEXT_VERSION = SCHEMA_VERSIONS["domain-context"]
+DOMAIN_CONTEXT_SHARD_VERSION = SCHEMA_VERSIONS["domain-context-shard"]
 DOMAIN_RESOLUTION_VERSION = SCHEMA_VERSIONS["domain-resolution"]
 ENVIRONMENT_CONTEXT_VERSION = SCHEMA_VERSIONS["environment-context"]
 FEATURE_MAP_VERSION = SCHEMA_VERSIONS["feature-map"]
@@ -55,6 +58,7 @@ REPORT_CURRENT_VERSION = SCHEMA_VERSIONS["report-current"]
 REPOSITORY_TRUST_VERSION = SCHEMA_VERSIONS["repository-trust"]
 RUNTIME_METADATA_VERSION = SCHEMA_VERSIONS["runtime-metadata"]
 SCREEN_RESULTS_VERSION = SCHEMA_VERSIONS["screen-results"]
+SCREEN_SHARD_VERSION = SCHEMA_VERSIONS["screen-shard"]
 SEVERITY_DECISIONS_VERSION = SCHEMA_VERSIONS["severity-decisions"]
 CANONICAL_CHECKS_VERSION = 5
 CANONICAL_HISTORY_VERSION = 1

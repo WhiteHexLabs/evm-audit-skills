@@ -224,7 +224,11 @@ class AuditRunTests(unittest.TestCase):
             for process in processes:
                 process.join(30)
                 self.assertEqual(process.exitcode, 0)
-            self.assertEqual([kind for kind, _ in outcomes], ["ok", "ok"])
+            self.assertEqual(
+                [kind for kind, _ in outcomes],
+                ["ok", "ok"],
+                f"concurrent publication outcomes: {outcomes!r}",
+            )
             pointer = self.read(run_dir / "report-current.json")
             generation = run_dir / "report-generations" / pointer["generation"]
             for name in ("AUDIT-REPORT.md", "issue-candidates.json", "report-bundle.json"):

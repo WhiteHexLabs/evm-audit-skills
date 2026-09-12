@@ -1,7 +1,7 @@
 # EVM Audit Skills
 
 A deterministic, evidence-gated EVM smart-contract audit Skill suite for
-Codex.
+Codex and ZCode.
 
 It combines evidence-backed Project Analysis and Context Analysis,
 candidate-only Deep Audit, proof-gated findings, and confirmed-only reporting.
@@ -14,36 +14,38 @@ candidate-only Deep Audit, proof-gated findings, and confirmed-only reporting.
 
 ### 1. Install and make the Skills discoverable
 
-Keep the suite together under your Codex skills directory, then expose its
-top-level Skill packages:
+Clone the suite and run the installer with your agent's name (`zcode` or
+`codex`):
 
 ```bash
-git clone https://github.com/iavl/evm-audit-skills-standalone ~/.codex/skills/evm-audit-skills
-for skill in ~/.codex/skills/evm-audit-skills/skills/evm-audit-*; do
-  ln -s "$skill" ~/.codex/skills/"$(basename "$skill")"
-done
+git clone https://github.com/iavl/evm-audit-skills
+cd evm-audit-skills
+./install.sh zcode
 ```
 
-If the suite is already checked out, use that directory instead of cloning.
-See [QUICKSTART.md](QUICKSTART.md) for the focused start guide.
+For an existing checkout, run `./install.sh` from that directory instead.
+The script symlinks each Skill package into the agent's skills directory, is
+safe to re-run, and verifies the result; it refuses to replace entries it did
+not create. See [QUICKSTART.md](QUICKSTART.md) for the focused start guide.
 
-### 2. Open the target repository in Codex
+### 2. Open the target repository
 
 Open the local smart-contract project, or provide its repository URL.
 
-### 3. Ask Codex to run the Master Skill
+### 3. Ask the agent to run the Master Skill
 
 ```text
 Audit this smart-contract repository using evm-audit-master:
 https://github.com/owner/repo
 ```
 
-GitHub issue creation is opt-in. Ask Codex to file confirmed Medium+ findings
-only when you explicitly want issue creation.
+GitHub issue creation is opt-in. Ask the agent to file confirmed Medium+
+findings only when you explicitly want issue creation.
 
-## Codex Audit
+## Stage Models
 
-The default Codex profile assigns different models to different audit phases:
+The default stage-model profile assigns different models to different audit
+phases, with two provider vocabularies. Codex default:
 
 | Public phase | Default Codex model |
 | --- | --- |
@@ -54,9 +56,29 @@ The default Codex profile assigns different models to different audit phases:
 | Vulnerability Validation | Sol · Max |
 | Final Report | Terra · Medium |
 
+ZCode default: controller phases (Project Analysis, Domain Resolution, Final
+Report) run on the main agent (GLM-5.3, handoff recommendations only); Domain
+Context runs on `evm-audit-worker-flash` (GLM-5.3-Flash); Initial Review and
+Deep Audit run on `evm-audit-worker-deep` (GLM-5.3, high); Vulnerability
+Validation runs on `evm-audit-worker-proof` (GLM-5.3, max).
+
 Use the defaults unless you explicitly customize the profile. It is confirmed
-once at audit startup. See the [Codex model profile](docs/codex-model-profile.md)
-for details.
+once at audit startup. See the
+[Model Profile documentation](docs/codex-model-profile.md) for details.
+
+## Parallel Orchestration
+
+On ZCode, the Master Skill fans the middle of the pipeline out to one worker
+agent per Domain per stage — four stage-aligned waves (Domain Context on the
+flash worker, Initial Review and Deep Audit on the deep worker, Proof on the
+proof worker) with controller-owned merge barriers and confirmed-only
+fan-in. The worker agent definitions are installed by
+`./install.sh zcode` (a new ZCode session is required for them to register);
+the audit itself never modifies your agent configuration. On Codex the same
+workflow runs sequentially in one session — the runtime provides no
+sub-agent dispatch, and no parallelism is simulated. Either way the evidence
+gates are identical. See
+[Sequential and orchestrated execution](docs/audit-workflow.md).
 
 ## How It Works
 

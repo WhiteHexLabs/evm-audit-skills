@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -435,6 +436,36 @@ def fsync_parent_directory(path: Path) -> bool:
     return True
 
 
+# Windows raises PermissionError with these codes from os.replace when the
+# destination is held open by another handle (no FILE_SHARE_DELETE); POSIX
+# replaces succeed in the same situation. Retry only these, boundedly.
+_WINDOWS_SHARING_VIOLATIONS = frozenset({32, 33})  # ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+ATOMIC_REPLACE_RETRY_SECONDS = 5.0
+ATOMIC_REPLACE_RETRY_INTERVAL = 0.05
+
+
+def _replace_boundedly(temporary: str, path: Path) -> None:
+    """os.replace with a bounded retry for Windows sharing violations.
+
+    Concurrent processes may briefly hold the destination open (for example
+    two report workers re-deriving ``audit-state.json`` outside the
+    publication lock). The retry keeps each attempt a full atomic replace
+    and always propagates the original error once the budget is exhausted;
+    permission problems other than sharing violations fail immediately.
+    """
+    deadline = time.monotonic() + ATOMIC_REPLACE_RETRY_SECONDS
+    while True:
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError as error:
+            if getattr(error, "winerror", None) not in _WINDOWS_SHARING_VIOLATIONS:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(ATOMIC_REPLACE_RETRY_INTERVAL)
+
+
 def atomic_write_bytes(path: Path, content: bytes) -> None:
     """Replace a file atomically, leaving no stale partial output."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -445,7 +476,7 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temporary, path)
+        _replace_boundedly(temporary, path)
         temporary = None
         fsync_parent_directory(path)
     finally:

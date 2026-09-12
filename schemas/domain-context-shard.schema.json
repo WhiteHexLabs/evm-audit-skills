@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:evm-audit-skills:domain-context-shard:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "routing_snapshot_id", "owner_domain", "context"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "routing_snapshot_id": {"$ref": "#/$defs/hash"},
+    "owner_domain": {"type": "string", "minLength": 1},
+    "context": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/context_entry"
+      }
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "location", "reason"],
+      "properties": {
+        "kind": {"enum": ["scope", "source", "inheritance", "interface", "dependency", "deployment", "environment", "compiler-ast", "test", "trace", "calculation", "invariant", "manual"]},
+        "location": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "context_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["KNOWN", "NOT_APPLICABLE", "UNKNOWN"]},
+        "scope_complete": {"type": "boolean"},
+        "value": {},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "KNOWN"}}},
+          "then": {"required": ["value", "evidence"], "properties": {"evidence": {"minItems": 1}}}
+        },
+        {
+          "if": {"properties": {"status": {"const": "NOT_APPLICABLE"}}},
+          "then": {"required": ["scope_complete", "evidence"], "properties": {"scope_complete": {"const": true}, "evidence": {"minItems": 1}}}
+        }
+      ]
+    }
+  }
+}
