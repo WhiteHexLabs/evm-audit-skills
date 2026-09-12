@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:evm-audit-skills:codex-model-profile:v3",
+  "$id": "urn:evm-audit-skills:codex-model-profile:v4",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "provider", "profile_name", "stages"],
   "properties": {
-    "schema_version": {"const": 3},
+    "schema_version": {"const": 4},
     "provider": {"enum": ["codex", "zcode"]},
     "profile_name": {"type": "string", "minLength": 1},
     "stages": {
@@ -100,10 +100,10 @@
       "const": {"model": "GLM-5.3-Flash", "thought_level": "default", "agent": "evm-audit-worker-flash"}
     },
     "zcode_screen_stage": {
-      "const": {"model": "GLM-5.3", "thought_level": "high", "agent": "evm-audit-worker-deep"}
+      "const": {"model": "GLM-5.3", "thought_level": "max", "agent": "evm-audit-worker-deep"}
     },
     "zcode_deep_review_stage": {
-      "const": {"model": "GLM-5.3", "thought_level": "high", "agent": "evm-audit-worker-deep"}
+      "const": {"model": "GLM-5.3", "thought_level": "max", "agent": "evm-audit-worker-deep"}
     },
     "zcode_proof_stage": {
       "const": {"model": "GLM-5.3", "thought_level": "max", "agent": "evm-audit-worker-proof"}

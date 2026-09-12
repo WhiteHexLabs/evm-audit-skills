@@ -90,7 +90,7 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIn("EVM AUDIT :: PROJECT ANALYSIS", result.stderr)
         self.assertEqual(result.stderr.count("EVM AUDIT :: PROJECT ANALYSIS"), 2)
         self.assertIn("Next required phase: Context Analysis", result.stderr)
-        self.assertIn("Codex model: gpt-5.6-terra", result.stderr)
+        self.assertIn("Codex model: gpt-5.6-luna", result.stderr)
         self.assertIn("Handoff: controller does not switch the active Codex model", result.stderr)
         self.assertNotIn("EVM AUDIT :: RECON", result.stderr)
         self.assertNotIn("EVM AUDIT :: ROUTING", result.stderr)
@@ -126,7 +126,7 @@ class ObservabilityTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertIsInstance(payload, dict)
             self.assertEqual(payload["next"]["progress"]["label"], "Context Analysis")
-            self.assertEqual(payload["next"]["recommended_execution"]["model"], "gpt-5.6-terra")
+            self.assertEqual(payload["next"]["recommended_execution"]["model"], "gpt-5.6-luna")
             self.assertEqual(
                 [entry["progress"]["step"] for entry in payload["progress_history"]],
                 [1, 1, 2],
@@ -224,11 +224,11 @@ class ObservabilityTests(unittest.TestCase):
                 self.assertEqual(result["stage"], stage_name)
             self.assertEqual(
                 _stage_result(run_dir, "DEEP_REVIEW")["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "high"},
+                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
             )
             self.assertEqual(
                 _stage_result(run_dir, "PROOF")["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "max"},
+                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
             )
 
         self.assertEqual(

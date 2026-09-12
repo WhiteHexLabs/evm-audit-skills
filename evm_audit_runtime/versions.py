@@ -10,7 +10,7 @@ SCHEMA_VERSIONS = {
     "code-context-query": 5,
     "code-context-benchmark": 2,
     "code-index": 2,
-    "codex-model-profile": 3,
+    "codex-model-profile": 4,
     "domain-context": 3,
     "domain-context-shard": 1,
     "domain-resolution": 2,

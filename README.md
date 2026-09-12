@@ -44,23 +44,24 @@ findings only when you explicitly want issue creation.
 
 ## Stage Models
 
-The default stage-model profile assigns different models to different audit
-phases, with two provider vocabularies. Codex default:
+The default stage-model profile maximizes reasoning effort on every phase,
+with two provider vocabularies. Codex default:
 
 | Public phase | Default Codex model |
 | --- | --- |
 | Project Analysis | Luna · Max |
-| Context Analysis | Terra · Medium |
-| Initial Review | Terra · High |
-| Deep Audit | Sol · High |
-| Vulnerability Validation | Sol · Max |
-| Final Report | Terra · Medium |
+| Context Analysis | Luna · Max |
+| Initial Review | Luna · Max |
+| Deep Audit | Luna · Max |
+| Vulnerability Validation | Luna · Max |
+| Final Report | Luna · Max |
 
 ZCode default: controller phases (Project Analysis, Domain Resolution, Final
-Report) run on the main agent (GLM-5.3, handoff recommendations only); Domain
-Context runs on `evm-audit-worker-flash` (GLM-5.3-Flash); Initial Review and
-Deep Audit run on `evm-audit-worker-deep` (GLM-5.3, high); Vulnerability
-Validation runs on `evm-audit-worker-proof` (GLM-5.3, max).
+Report) run on the main agent (GLM-5.3 at max thought level, handoff
+recommendations only); Domain Context runs on `evm-audit-worker-flash`
+(GLM-5.3-Flash, unpinned/default — the model documents no explicit level);
+Initial Review and Deep Audit run on `evm-audit-worker-deep` (GLM-5.3, max);
+Vulnerability Validation runs on `evm-audit-worker-proof` (GLM-5.3, max).
 
 Use the defaults unless you explicitly customize the profile. It is confirmed
 once at audit startup. See the

@@ -6,32 +6,34 @@ compatibility; since schema version 2 it carries a `provider` field with two
 supported vocabularies. Confirm one profile at audit startup; explicit stage
 overrides may customize that profile for the audit.
 
-Codex default (`provider: codex`; unchanged from v1):
+Codex default (`provider: codex`; since schema v4 every stage runs
+Luna · Max):
 
 | Public phase | Default Codex model |
 | --- | --- |
 | Project Analysis | Luna · Max |
-| Context Analysis | Terra · Medium |
-| Initial Review | Terra · High |
-| Deep Audit | Sol · High |
-| Vulnerability Validation | Sol · Max |
-| Final Report | Terra · Medium |
+| Context Analysis | Luna · Max |
+| Initial Review | Luna · Max |
+| Deep Audit | Luna · Max |
+| Vulnerability Validation | Luna · Max |
+| Final Report | Luna · Max |
 
 ZCode default (`provider: zcode`; each stage additionally names the worker
 agent type that dispatches it, `null` for controller-run stages). ZCode
 thinking levels are model-specific: GLM-5.3 supports `low`, `high`, and
 `max`; GLM-5.3-Flash has no verified explicit level and is represented as
-`default` (unpinned — the worker definition pins no `thoughtLevel`):
+`default` (unpinned — the worker definition pins no `thoughtLevel`). Since
+schema v4 every GLM-5.3 stage pins `max`:
 
 | Public phase | Model / thought level | Worker agent |
 | --- | --- | --- |
 | Project Analysis | GLM-5.3 · Max | — (main agent) |
-| Context Analysis · Resolution | GLM-5.3 · High | — (main agent) |
+| Context Analysis · Resolution | GLM-5.3 · Max | — (main agent) |
 | Context Analysis · Domain Context | GLM-5.3-Flash · default | `evm-audit-worker-flash` |
-| Initial Review | GLM-5.3 · High | `evm-audit-worker-deep` |
-| Deep Audit | GLM-5.3 · High | `evm-audit-worker-deep` |
+| Initial Review | GLM-5.3 · Max | `evm-audit-worker-deep` |
+| Deep Audit | GLM-5.3 · Max | `evm-audit-worker-deep` |
 | Vulnerability Validation | GLM-5.3 · Max | `evm-audit-worker-proof` |
-| Final Report | GLM-5.3 · High | — (main agent) |
+| Final Report | GLM-5.3 · Max | — (main agent) |
 
 Initial Review deliberately uses the flagship model: `NOT_APPLICABLE_CONFIRMED`
 is a trusted-absence decision, so triage quality is security-relevant.
@@ -65,7 +67,8 @@ that provider into the run. Later global edits apply only to new runs; edit
 the run-scoped copy to change an existing run. If the user-level file is
 absent, `init` snapshots the built-in defaults for that provider. An explicit
 `--model-profile` file always wins over the provider flag. Profiles with an
-older schema version are rejected; there is no v1 compatibility path.
+older schema version are rejected; there is no cross-version compatibility
+path (v4 rejects v3-and-earlier outright).
 
 ## What the profile does and does not do
 

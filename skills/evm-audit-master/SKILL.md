@@ -154,11 +154,11 @@ Codex default (`--provider codex`):
 ```text
 EVM AUDIT :: MODEL PROFILE (codex)
 Project Analysis: gpt-5.6-luna max
-Context Analysis: gpt-5.6-terra medium
-Initial Review: gpt-5.6-terra high
-Deep Audit: gpt-5.6-sol high
-Vulnerability Validation: gpt-5.6-sol max
-Final Report: gpt-5.6-terra medium
+Context Analysis: gpt-5.6-luna max
+Initial Review: gpt-5.6-luna max
+Deep Audit: gpt-5.6-luna max
+Vulnerability Validation: gpt-5.6-luna max
+Final Report: gpt-5.6-luna max
 
 Use this default profile?
 1. Use defaults
@@ -170,10 +170,11 @@ Domain Resolution, Final Report) run on the main agent (`GLM-5.3`, agent
 `null`, handoff recommendations only); Domain Context runs on
 `evm-audit-worker-flash` (GLM-5.3-Flash, thought level unpinned/default);
 Initial Review and Deep Audit run on `evm-audit-worker-deep` (GLM-5.3,
-`thoughtLevel: high`); Vulnerability Validation runs on
-`evm-audit-worker-proof` (GLM-5.3, `thoughtLevel: max`). Initial Review
-deliberately uses the flagship model: `NOT_APPLICABLE_CONFIRMED` is a
-trusted-absence decision. Each worker agent type pins exactly one
+`thoughtLevel: max`); Vulnerability Validation runs on
+`evm-audit-worker-proof` (GLM-5.3, `thoughtLevel: max`). Every GLM-5.3
+stage pins max effort; GLM-5.3-Flash has no verified explicit level.
+Initial Review deliberately uses the flagship model: `NOT_APPLICABLE_CONFIRMED`
+is a trusted-absence decision. Each worker agent type pins exactly one
 model/thought-level contract; a worker invocation never crosses a stage
 boundary into a different contract.
 
@@ -187,7 +188,7 @@ or `--accept-default-models`, or a validated file via `--model-profile`).
 Persist the resolved choice in `<run-dir>/config/codex-model-profile.json`;
 once present, do not ask again. For customization, show the full current
 profile once and accept only changed lines such as `SCREEN = gpt-5.6-sol/high`
-(codex) or `SCREEN = GLM-5.3/high/evm-audit-worker-deep` (zcode), preserving
+(codex) or `SCREEN = GLM-5.3/max/evm-audit-worker-deep` (zcode), preserving
 omitted internal stages. A zcode stage entry must match the full execution
 contract of its `agent` — model and thought level as pinned in the shipped
 worker template, and a stage the agent is allowed to execute; the validator

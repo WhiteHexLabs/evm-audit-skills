@@ -66,7 +66,7 @@ ZCODE_WORKER_AGENTS: dict[str, dict[str, Any]] = {
     },
     "evm-audit-worker-deep": {
         "model": "GLM-5.3",
-        "thought_level": "high",
+        "thought_level": "max",
         "allowed_stages": ("SCREEN", "DEEP_REVIEW"),
     },
     "evm-audit-worker-proof": {
@@ -93,39 +93,44 @@ PROVIDER_STAGE_KEYS = {
 }
 
 
+# Default policy (schema v4): maximum reasoning effort on every stage where
+# the provider can express one. Codex runs Luna at max across the pipeline;
+# GLM-5.3 stages pin thought level max, and GLM-5.3-Flash keeps "default"
+# because it documents no explicit level.
 DEFAULT_CODEX_MODEL_PROFILE: dict[str, Any] = {
     "schema_version": CODEX_MODEL_PROFILE_VERSION,
     "provider": "codex",
-    "profile_name": "default-balanced-audit",
+    "profile_name": "default-max-audit",
     "stages": {
         "RECON": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
         "ROUTING": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
-        "DOMAIN_RESOLUTION": {"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
-        "DOMAIN_CONTEXT": {"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
-        "SCREEN": {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
-        "DEEP_REVIEW": {"model": "gpt-5.6-sol", "reasoning_effort": "high"},
-        "PROOF": {"model": "gpt-5.6-sol", "reasoning_effort": "max"},
-        "REPORT": {"model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+        "DOMAIN_RESOLUTION": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
+        "DOMAIN_CONTEXT": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
+        "SCREEN": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
+        "DEEP_REVIEW": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
+        "PROOF": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
+        "REPORT": {"model": "gpt-5.6-luna", "reasoning_effort": "max"},
     },
 }
 
 # Controller stages (agent null) are main-session handoff recommendations.
 # Worker stages must name an agent whose pinned contract can execute them.
-# SCREEN deliberately runs the flagship model at high: NOT_APPLICABLE_CONFIRMED
-# is a trusted-absence decision, so triage quality is security-relevant.
+# SCREEN deliberately runs the flagship model at max effort:
+# NOT_APPLICABLE_CONFIRMED is a trusted-absence decision, so triage quality
+# is security-relevant.
 DEFAULT_ZCODE_MODEL_PROFILE: dict[str, Any] = {
     "schema_version": CODEX_MODEL_PROFILE_VERSION,
     "provider": "zcode",
-    "profile_name": "default-balanced-audit",
+    "profile_name": "default-max-audit",
     "stages": {
         "RECON": {"model": "GLM-5.3", "thought_level": "max", "agent": None},
         "ROUTING": {"model": "GLM-5.3", "thought_level": "max", "agent": None},
-        "DOMAIN_RESOLUTION": {"model": "GLM-5.3", "thought_level": "high", "agent": None},
+        "DOMAIN_RESOLUTION": {"model": "GLM-5.3", "thought_level": "max", "agent": None},
         "DOMAIN_CONTEXT": {"model": "GLM-5.3-Flash", "thought_level": "default", "agent": "evm-audit-worker-flash"},
-        "SCREEN": {"model": "GLM-5.3", "thought_level": "high", "agent": "evm-audit-worker-deep"},
-        "DEEP_REVIEW": {"model": "GLM-5.3", "thought_level": "high", "agent": "evm-audit-worker-deep"},
+        "SCREEN": {"model": "GLM-5.3", "thought_level": "max", "agent": "evm-audit-worker-deep"},
+        "DEEP_REVIEW": {"model": "GLM-5.3", "thought_level": "max", "agent": "evm-audit-worker-deep"},
         "PROOF": {"model": "GLM-5.3", "thought_level": "max", "agent": "evm-audit-worker-proof"},
-        "REPORT": {"model": "GLM-5.3", "thought_level": "high", "agent": None},
+        "REPORT": {"model": "GLM-5.3", "thought_level": "max", "agent": None},
     },
 }
 

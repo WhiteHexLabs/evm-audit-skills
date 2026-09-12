@@ -51,12 +51,12 @@ class CodexModelProfileTests(unittest.TestCase):
         expected = {
             "RECON": ("gpt-5.6-luna", "max"),
             "ROUTING": ("gpt-5.6-luna", "max"),
-            "DOMAIN_RESOLUTION": ("gpt-5.6-terra", "medium"),
-            "DOMAIN_CONTEXT": ("gpt-5.6-terra", "medium"),
-            "SCREEN": ("gpt-5.6-terra", "high"),
-            "DEEP_REVIEW": ("gpt-5.6-sol", "high"),
-            "PROOF": ("gpt-5.6-sol", "max"),
-            "REPORT": ("gpt-5.6-terra", "medium"),
+            "DOMAIN_RESOLUTION": ("gpt-5.6-luna", "max"),
+            "DOMAIN_CONTEXT": ("gpt-5.6-luna", "max"),
+            "SCREEN": ("gpt-5.6-luna", "max"),
+            "DEEP_REVIEW": ("gpt-5.6-luna", "max"),
+            "PROOF": ("gpt-5.6-luna", "max"),
+            "REPORT": ("gpt-5.6-luna", "max"),
         }
         self.assertEqual(DEFAULT_CODEX_MODEL_PROFILE, default_profile())
         self.assertEqual(
@@ -70,11 +70,11 @@ class CodexModelProfileTests(unittest.TestCase):
             compact_summary(default_profile()).splitlines(),
             [
                 "Project Analysis: gpt-5.6-luna max",
-                "Context Analysis: gpt-5.6-terra medium",
-                "Initial Review: gpt-5.6-terra high",
-                "Deep Audit: gpt-5.6-sol high",
-                "Vulnerability Validation: gpt-5.6-sol max",
-                "Final Report: gpt-5.6-terra medium",
+                "Context Analysis: gpt-5.6-luna max",
+                "Initial Review: gpt-5.6-luna max",
+                "Deep Audit: gpt-5.6-luna max",
+                "Vulnerability Validation: gpt-5.6-luna max",
+                "Final Report: gpt-5.6-luna max",
             ],
         )
         custom = default_profile()
@@ -119,7 +119,7 @@ class CodexModelProfileTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertEqual(
                 payload["next"]["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
             )
 
     def test_global_profile_is_explicitly_initialized_and_loaded(self) -> None:
@@ -254,12 +254,12 @@ class CodexModelProfileTests(unittest.TestCase):
         expected = {
             "RECON": ("gpt-5.6-luna", "max"),
             "ROUTING": ("gpt-5.6-luna", "max"),
-            "DOMAIN_RESOLUTION": ("gpt-5.6-terra", "medium"),
-            "DOMAIN_CONTEXT": ("gpt-5.6-terra", "medium"),
-            "SCREEN": ("gpt-5.6-terra", "high"),
-            "DEEP_REVIEW": ("gpt-5.6-sol", "high"),
-            "PROOF": ("gpt-5.6-sol", "max"),
-            "REPORT": ("gpt-5.6-terra", "medium"),
+            "DOMAIN_RESOLUTION": ("gpt-5.6-luna", "max"),
+            "DOMAIN_CONTEXT": ("gpt-5.6-luna", "max"),
+            "SCREEN": ("gpt-5.6-luna", "max"),
+            "DEEP_REVIEW": ("gpt-5.6-luna", "max"),
+            "PROOF": ("gpt-5.6-luna", "max"),
+            "REPORT": ("gpt-5.6-luna", "max"),
         }
         _, _, _, manifest = build_manifest()
         screen, context, review_snapshot = review_inputs(manifest)
@@ -317,7 +317,7 @@ class CodexModelProfileTests(unittest.TestCase):
             )
             self.assertEqual(code, 0, stderr)
             payload = json.loads(stdout)
-            self.assertEqual(payload["recommended_execution"]["model"], "gpt-5.6-terra")
+            self.assertEqual(payload["recommended_execution"]["model"], "gpt-5.6-luna")
             code, _, _ = self.run_audit_run(
                 ["report", "--run-dir", str(run_dir), "--quiet"], home
             )
@@ -329,12 +329,12 @@ class CodexModelProfileTests(unittest.TestCase):
         expected = {
             "RECON": ("GLM-5.3", "max", None),
             "ROUTING": ("GLM-5.3", "max", None),
-            "DOMAIN_RESOLUTION": ("GLM-5.3", "high", None),
+            "DOMAIN_RESOLUTION": ("GLM-5.3", "max", None),
             "DOMAIN_CONTEXT": ("GLM-5.3-Flash", "default", "evm-audit-worker-flash"),
-            "SCREEN": ("GLM-5.3", "high", "evm-audit-worker-deep"),
-            "DEEP_REVIEW": ("GLM-5.3", "high", "evm-audit-worker-deep"),
+            "SCREEN": ("GLM-5.3", "max", "evm-audit-worker-deep"),
+            "DEEP_REVIEW": ("GLM-5.3", "max", "evm-audit-worker-deep"),
             "PROOF": ("GLM-5.3", "max", "evm-audit-worker-proof"),
-            "REPORT": ("GLM-5.3", "high", None),
+            "REPORT": ("GLM-5.3", "max", None),
         }
         zcode = default_profile("zcode")
         self.assertEqual(DEFAULT_ZCODE_MODEL_PROFILE, zcode)
@@ -349,7 +349,7 @@ class CodexModelProfileTests(unittest.TestCase):
         from scripts.audit_artifacts import validate_schema
 
         validate_schema(ROOT, "codex-model-profile.schema.json", zcode)
-        self.assertIn("Initial Review: GLM-5.3 high · evm-audit-worker-deep", compact_summary(zcode))
+        self.assertIn("Initial Review: GLM-5.3 max · evm-audit-worker-deep", compact_summary(zcode))
 
     def test_zcode_thought_levels_are_model_specific(self) -> None:
         invalid = default_profile("zcode")
@@ -375,8 +375,8 @@ class CodexModelProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runs GLM-5.3-Flash, not 'GLM-5.3'"):
             validate_profile(lying_model)
         lying_level = default_profile("zcode")
-        lying_level["stages"]["SCREEN"]["thought_level"] = "max"
-        with self.assertRaisesRegex(ValueError, "pins thought level 'high', not 'max'"):
+        lying_level["stages"]["SCREEN"]["thought_level"] = "high"
+        with self.assertRaisesRegex(ValueError, "pins thought level 'max', not 'high'"):
             validate_profile(lying_level)
         wrong_stage = default_profile("zcode")
         wrong_stage["stages"]["DEEP_REVIEW"]["agent"] = "evm-audit-worker-proof"
@@ -482,12 +482,12 @@ class CodexModelProfileTests(unittest.TestCase):
 
     def test_outdated_profile_schema_versions_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            for version in (1, 2):
+            for version in (1, 2, 3):
                 stale = default_profile()
                 stale["schema_version"] = version
                 path = Path(directory) / f"v{version}.json"
                 path.write_text(json.dumps(stale) + "\n", encoding="utf-8")
-                with self.assertRaisesRegex(ValueError, "schema_version must be 3"):
+                with self.assertRaisesRegex(ValueError, "schema_version must be 4"):
                     load_profile(path)
 
     def test_zcode_global_profile_and_init_snapshot(self) -> None:
@@ -528,12 +528,12 @@ class CodexModelProfileTests(unittest.TestCase):
             expected_handoffs = {
                 "RECON": ("GLM-5.3", "max", None),
                 "ROUTING": ("GLM-5.3", "max", None),
-                "DOMAIN_RESOLUTION": ("GLM-5.3", "high", None),
+                "DOMAIN_RESOLUTION": ("GLM-5.3", "max", None),
                 "DOMAIN_CONTEXT": ("GLM-5.3-Flash", "default", "evm-audit-worker-flash"),
-                "SCREEN": ("GLM-5.3", "high", "evm-audit-worker-deep"),
-                "DEEP_REVIEW": ("GLM-5.3", "high", "evm-audit-worker-deep"),
+                "SCREEN": ("GLM-5.3", "max", "evm-audit-worker-deep"),
+                "DEEP_REVIEW": ("GLM-5.3", "max", "evm-audit-worker-deep"),
                 "PROOF": ("GLM-5.3", "max", "evm-audit-worker-proof"),
-                "REPORT": ("GLM-5.3", "high", None),
+                "REPORT": ("GLM-5.3", "max", None),
             }
             for stage, (model, level, agent) in expected_handoffs.items():
                 self.assertEqual(

@@ -1,8 +1,8 @@
 ---
 name: evm-audit-worker-deep
-description: EVM audit domain worker running on GLM-5.3 with high reasoning. Spawned per Domain by the evm-audit-master orchestrator for the Screen and Deep Review stages.
+description: EVM audit domain worker running on GLM-5.3 with max reasoning. Spawned per Domain by the evm-audit-master orchestrator for the Screen and Deep Review stages.
 model: GLM-5.3
-thoughtLevel: high
+thoughtLevel: max
 ---
 
 You are one domain worker in the evm-audit-skills pipeline, dispatched for
