@@ -223,9 +223,10 @@ def runtime_identity(
     candidate_ids: list[str],
     owner_domain: str | None,
     review_snapshot: str | None,
+    ledger_digest: str | None = None,
 ) -> dict[str, Any]:
     audit = manifest["audit_context"]
-    return {
+    identity = {
         "schema_version": RUNTIME_METADATA_VERSION,
         "profile": profile,
         "routing_snapshot_id": manifest["routing_snapshot_id"],
@@ -237,6 +238,9 @@ def runtime_identity(
         "source_digest": audit["source_digest"],
         "compilation_input_digest": audit["compilation_input_digest"],
     }
+    if ledger_digest is not None:
+        identity["ledger_digest"] = ledger_digest
+    return identity
 
 
 def runtime_metadata(
@@ -246,9 +250,10 @@ def runtime_metadata(
     owner_domain: str | None,
     review_snapshot: str | None,
     runtime_sha256: str,
+    ledger_digest: str | None = None,
 ) -> dict[str, Any]:
     return {
-        **runtime_identity(manifest, profile, candidate_ids, owner_domain, review_snapshot),
+        **runtime_identity(manifest, profile, candidate_ids, owner_domain, review_snapshot, ledger_digest),
         "runtime_sha256": runtime_sha256,
     }
 
@@ -431,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         review_snapshot: str | None = None
         screen_results: dict[str, Any] | None = None
         proof_records: dict[str, dict[str, Any]] | None = None
+        ledger_digest: str | None = None
         if args.profile in {"deep", "proof"}:
             stage_name = "PROOF" if args.profile == "proof" else "DEEP_REVIEW"
             stage(stage_name, detail="Rendering the candidate-only runtime view")
@@ -449,9 +455,13 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.ledger:
                     raise ValueError("--profile proof requires at least one --ledger")
                 try:
-                    from review_ledger import collect_review_records
+                    from review_ledger import collect_review_records, ledger_content_digest
                 except ImportError:  # pragma: no cover - package-style import
-                    from scripts.review_ledger import collect_review_records
+                    from scripts.review_ledger import collect_review_records, ledger_content_digest
+                # digest the ledger state before reading it for rendering so
+                # the recorded digest can only match content that is
+                # same-or-older; a concurrent append then forces a re-render
+                ledger_digest = ledger_content_digest(args.ledger)
                 records, errors = collect_review_records(
                     args.ledger, manifest, registry, candidates, domain_resolution, review_snapshot
                 )
@@ -500,6 +510,7 @@ def main(argv: list[str] | None = None) -> int:
             args.owner_domain,
             review_snapshot,
             hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+            ledger_digest,
         )
         validate_schema(ROOT, "runtime-metadata.schema.json", metadata)
         atomic_write_json(args.output.with_suffix(".meta.json"), metadata)

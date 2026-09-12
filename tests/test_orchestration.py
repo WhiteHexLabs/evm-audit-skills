@@ -186,6 +186,7 @@ class OrchestrationLifecycleTests(unittest.TestCase):
         canonical_id: str,
         *,
         status: str,
+        unresolved_reason: str = "proof is pending",
     ) -> None:
         registry, _, _ = suite_inputs()
         route = next(entry for entry in manifest["selected"] if entry["canonical_id"] == canonical_id)
@@ -211,7 +212,9 @@ class OrchestrationLifecycleTests(unittest.TestCase):
                 }
             ],
         }
-        if status != "CONFIRMED":
+        if status == "SUSPICIOUS":
+            record["unresolved_reason"] = unresolved_reason
+        elif status != "CONFIRMED":
             record["preserved_invariant"] = "fixture invariant holds"
         append(
             run_dir / f"reviews/review-{route['owner_domain']}.jsonl",
@@ -317,6 +320,56 @@ class OrchestrationLifecycleTests(unittest.TestCase):
             self.assertEqual(self.view_names(run_dir, "deep"), [])
             self.assertEqual(self.view_names(run_dir, "proof"), [])
             self.assertFalse((run_dir / "reviews/review-evm-audit-general.jsonl").exists())
+
+    def test_suspicious_revision_bump_re_renders_the_proof_view(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+
+            self.next_stage(run_dir)
+            self.author_context_shards(run_dir, directory, manifest)
+            merge_context(ROOT, run_dir)
+            self.next_stage(run_dir)
+            self.author_screen_shards(run_dir, directory, manifest, result="CANDIDATE")
+            merge_screen(ROOT, run_dir)
+            self.next_stage(run_dir)
+
+            erc20_ids = sorted(
+                entry["canonical_id"]
+                for entry in selected_entries(manifest)
+                if entry["owner_domain"] == "evm-audit-erc20"
+            )
+            suspicious_id = erc20_ids[0]
+            self.write_domain_ledgers(
+                run_dir, manifest, self.deep_records(run_dir, manifest, suspicious_id=suspicious_id)
+            )
+
+            result = self.next_stage(run_dir)
+            self.assert_stage(result, "PROOF", agent="evm-audit-worker-proof")
+            view = run_dir / "runtime" / "proof-evm-audit-erc20.md"
+            rendered = view.read_text(encoding="utf-8")
+            self.assertIn("revision `1`", rendered)
+            self.assertIn("proof is pending", rendered)
+            mtime = view.stat().st_mtime_ns
+
+            # A follow-up SUSPICIOUS revision keeps the record unresolved but
+            # changes the ledger content; the proof view must be re-rendered
+            # instead of serving the revision-1 view as current.
+            self.append_proof_resolution(
+                run_dir,
+                manifest,
+                suspicious_id,
+                status="SUSPICIOUS",
+                unresolved_reason="revision 2: refined pending reason",
+            )
+            result = self.next_stage(run_dir)
+            self.assert_stage(result, "PROOF", agent="evm-audit-worker-proof")
+            self.assertEqual(result["pending"], [suspicious_id])
+            rendered = view.read_text(encoding="utf-8")
+            self.assertIn("revision `2`", rendered)
+            self.assertIn("revision 2: refined pending reason", rendered)
+            self.assertNotIn("proof is pending", rendered)
+            self.assertNotEqual(view.stat().st_mtime_ns, mtime)
 
     def test_no_suspicious_records_skip_proof(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

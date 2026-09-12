@@ -52,6 +52,35 @@ class ReviewLedgerCommitTests(unittest.TestCase):
             self.assertEqual(len(load(path)), 2)
             self.assertEqual(json.loads(sidecar.read_text(encoding="utf-8")), metadata)
 
+    def test_ledger_content_digest_binds_committed_state(self) -> None:
+        registry, manifest, screen, domain_context, expected_ids, suspicious, proof = self._records()
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "review-a.jsonl"
+            second = Path(directory) / "review-b.jsonl"
+            append(first, manifest, suspicious, registry, expected_ids, domain_context=domain_context, screen_results=screen)
+            before = review_ledger.ledger_content_digest([first, second])
+            self.assertEqual(review_ledger.ledger_content_digest([second, first]), before)
+
+            append(first, manifest, proof, registry, expected_ids, domain_context=domain_context, screen_results=screen)
+            after_append = review_ledger.ledger_content_digest([first, second])
+            self.assertNotEqual(after_append, before)
+
+            # uncommitted tail bytes are not part of the authoritative content
+            committed = first.read_bytes()
+            first.write_bytes(committed + b'{"record_type":"review"')
+            self.assertEqual(review_ledger.ledger_content_digest([first, second]), after_append)
+
+            # identical content under a different ledger name is a different
+            # ledger state, so the name participates in the digest
+            second.write_bytes(committed)
+            second.with_name(f"{second.name}.commit.json").write_bytes(
+                first.with_name(f"{first.name}.commit.json").read_bytes()
+            )
+            self.assertNotEqual(
+                review_ledger.ledger_content_digest([second]),
+                review_ledger.ledger_content_digest([first]),
+            )
+
     def test_short_write_and_sidecar_failure_never_commit_new_tail(self) -> None:
         registry, manifest, screen, domain_context, expected_ids, suspicious, proof = self._records()
         with tempfile.TemporaryDirectory() as directory:

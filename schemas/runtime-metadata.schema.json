@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:evm-audit-skills:runtime-metadata:v1",
+  "$id": "urn:evm-audit-skills:runtime-metadata:v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
     "runtime_sha256"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"const": 2},
     "profile": {"enum": ["screen", "deep", "proof"]},
     "routing_snapshot_id": {"$ref": "#/$defs/hash"},
     "review_snapshot_id": {"anyOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
@@ -27,8 +27,16 @@
     "registry_sha256": {"$ref": "#/$defs/hash"},
     "source_digest": {"$ref": "#/$defs/hash"},
     "compilation_input_digest": {"$ref": "#/$defs/hash"},
+    "ledger_digest": {"$ref": "#/$defs/hash"},
     "runtime_sha256": {"$ref": "#/$defs/hash"}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"profile": {"const": "proof"}}},
+      "then": {"required": ["ledger_digest"]},
+      "else": {"not": {"required": ["ledger_digest"]}}
+    }
+  ],
   "$defs": {
     "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   }

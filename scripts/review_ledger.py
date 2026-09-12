@@ -217,6 +217,23 @@ def load(path: Path) -> list[dict[str, Any]]:
         return _load_unlocked(path)
 
 
+def ledger_content_digest(paths: list[Path]) -> str:
+    """Deterministic digest over the committed content of one or more ledgers.
+
+    Generated proof views bind this digest into their identity so a follow-up
+    revision cannot be served from a view rendered against older ledger state.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(paths, key=lambda item: item.name):
+        with _ledger_lock(path, shared=True):
+            data = _authoritative_bytes(path)[0]
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
 def _manifest_routes(
     manifest: dict[str, Any],
     domain_resolution: dict[str, Any] | None = None,

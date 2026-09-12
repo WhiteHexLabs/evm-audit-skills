@@ -28,7 +28,7 @@ SCHEMA_VERSIONS = {
     "report-bundle": 3,
     "report-current": 3,
     "repository-trust": 1,
-    "runtime-metadata": 1,
+    "runtime-metadata": 2,
     "screen-results": 2,
     "screen-shard": 1,
     "severity-decisions": 2,

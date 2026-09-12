@@ -84,7 +84,7 @@ try:
         validate_target_snapshot,
     )
     from render_runtime import runtime_identity, selected_entries, validate_manifest, validate_screen_results
-    from review_ledger import _ledger_lock, collect_review_records
+    from review_ledger import _ledger_lock, collect_review_records, ledger_content_digest
     from synthesize_report import synthesize
     from validate_audit_run import validate_run
 except ImportError:  # pragma: no cover
@@ -117,7 +117,7 @@ except ImportError:  # pragma: no cover
         validate_target_snapshot,
     )
     from scripts.render_runtime import runtime_identity, selected_entries, validate_manifest, validate_screen_results
-    from scripts.review_ledger import _ledger_lock, collect_review_records
+    from scripts.review_ledger import _ledger_lock, collect_review_records, ledger_content_digest
     from scripts.synthesize_report import synthesize
     from scripts.validate_audit_run import validate_run
 
@@ -1497,8 +1497,11 @@ def _render_owner_view(
     verbose: bool = False,
 ) -> tuple[Path, bool]:
     output = values["manifest"].parent.parent / "runtime" / f"{profile}-{owner}.md"
+    # proof views embed ledger record content, so their identity must bind the
+    # ledger state or a follow-up revision would be served from a stale view
+    ledger_digest = ledger_content_digest(ledger_paths) if profile == "proof" else None
     expected = runtime_identity(
-        load_json(values["manifest"]), profile, sorted(ids), owner, review_snapshot
+        load_json(values["manifest"]), profile, sorted(ids), owner, review_snapshot, ledger_digest
     )
     if _runtime_view_current(output, expected):
         return output, True
