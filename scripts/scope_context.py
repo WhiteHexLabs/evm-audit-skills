@@ -54,20 +54,6 @@ def resolve_scope_root(target: Path, audit_root: Path | None = None) -> Path:
     return root
 
 
-def validate_run_dir_isolation(
-    run_dir: Path,
-    *,
-    audit_root: Path,
-    build_root: Path,
-) -> None:
-    """Keep mutable run state outside both authoritative input trees."""
-    resolved_run = run_dir.resolve()
-    for label, root in (("audit_root", audit_root), ("build_root", build_root)):
-        resolved_root = root.resolve()
-        if resolved_run == resolved_root or resolved_root in resolved_run.parents:
-            raise ValueError(f"run-dir must be outside {label}: {resolved_run}")
-
-
 def relative_scope_path(root: Path, path: Path) -> str | None:
     path = path.resolve()
     if root.is_file():
@@ -136,6 +122,11 @@ def scope_inventory(
     included: list[str] = []
     excluded: list[str] = []
     for path in sorted(root.rglob("*.sol")):
+        # Forge writes artifact directories named "<Contract>.sol" under out/;
+        # a directory is never a Solidity source, and counting one would make
+        # the snapshot depend on build outputs created during Recon.
+        if not path.is_file():
+            continue
         relative_path = path.relative_to(root)
         if excluded_by_root(relative_path, managed_prefixes):
             # Managed-output descendants stay invisible to both buckets:
@@ -177,7 +168,8 @@ def _compilation_sources(root: Path, excluded_roots: Iterable[Path] = ()) -> lis
     return [
         path
         for path in sorted(root.rglob("*.sol"))
-        if not any(part in NON_SOURCE_PARTS for part in path.relative_to(root).parts)
+        if path.is_file()
+        and not any(part in NON_SOURCE_PARTS for part in path.relative_to(root).parts)
         and not excluded_by_root(path.relative_to(root), managed_prefixes)
     ]
 

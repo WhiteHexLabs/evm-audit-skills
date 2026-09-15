@@ -263,7 +263,8 @@ def synthesize(
     if selected != active_ids:
         raise ValueError("audit-state selected coverage does not match the resolved routing manifest")
     latest, errors = collect_review_records(
-        ledger_paths, manifest, registry, candidates, domain_resolution, state["review_snapshot_id"]
+        ledger_paths, manifest, registry, candidates, domain_resolution, state["review_snapshot_id"],
+        managed_output_root=managed_output_root,
     )
     if errors:
         raise ValueError("; ".join(errors))

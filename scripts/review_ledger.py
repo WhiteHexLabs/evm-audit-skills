@@ -639,7 +639,8 @@ def pending(
                 raise ValueError("; ".join(errors))
     candidates = {entry["canonical_id"] for entry in screen_records if entry["result"] == "CANDIDATE"}
     records, errors = collect_review_records(
-        ledgers, manifest, registry, candidates, domain_resolution, review_snapshot_id
+        ledgers, manifest, registry, candidates, domain_resolution, review_snapshot_id,
+        managed_output_root=managed_output_root,
     )
     if errors:
         raise ValueError("; ".join(errors))

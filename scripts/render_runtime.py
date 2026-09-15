@@ -472,7 +472,8 @@ def main(argv: list[str] | None = None) -> int:
                 # same-or-older; a concurrent append then forces a re-render
                 ledger_digest = ledger_content_digest(args.ledger)
                 records, errors = collect_review_records(
-                    args.ledger, manifest, registry, candidates, domain_resolution, review_snapshot
+                    args.ledger, manifest, registry, candidates, domain_resolution, review_snapshot,
+                    managed_output_root=args.managed_output_root,
                 )
                 if errors:
                     raise ValueError("; ".join(errors))

@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from evm_audit_runtime.output_layout import (
+    resolve_output_dir,
+    run_layout_metadata,
+    validate_managed_output_root,
+)
 from evm_audit_runtime.versions import POC_EVIDENCE_VERSION, POC_VERIFICATION_VERSION, REPORT_CURRENT_VERSION, REPORTING_VERSION, REPOSITORY_TRUST_VERSION
 from evm_audit_runtime.reporting import derive_poc_required_ids
 from evm_audit_runtime.repository_trust import copy_tree, prepare_repository
@@ -124,9 +129,9 @@ except ImportError:  # pragma: no cover
     from scripts.validate_audit_run import validate_run
 
 try:
-    from scope_context import resolve_build_root, validate_run_dir_isolation
+    from scope_context import resolve_build_root
 except ImportError:  # pragma: no cover
-    from scripts.scope_context import resolve_build_root, validate_run_dir_isolation
+    from scripts.scope_context import resolve_build_root
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -213,6 +218,7 @@ def paths(run_dir: Path) -> dict[str, Any]:
         "poc_verification": run_dir / "reviews/poc-verification.json",
         "model_profile": run_dir / "config/codex-model-profile.json",
         "repository_trust": run_dir / "config/repository-trust.json",
+        "run_layout": run_dir / "config/run-layout.json",
     }
 
 
@@ -296,6 +302,15 @@ def _log_model_guidance(run_dir: Path | None, stage_name: str) -> None:
         info("Handoff: controller does not switch its own model or thought level; workers run on their configured agent types")
 
 
+def _location_metadata(run_dir: Path) -> dict[str, str]:
+    run_dir = run_dir.resolve()
+    return {
+        "run_dir": str(run_dir),
+        "output_dir": str(run_dir),
+        "report_path": str(run_dir / "AUDIT-REPORT.md"),
+    }
+
+
 def _stage_result(
     run_dir: Path,
     stage_name: str,
@@ -309,6 +324,7 @@ def _stage_result(
         **values,
         "progress": progress_metadata(stage_name, summary=summary),
         "recommended_execution": recommended_execution(run_dir, stage_name),
+        "location": _location_metadata(run_dir),
     }
     if navigation is not None:
         result["navigation"] = navigation
@@ -689,12 +705,16 @@ def _relocate_paths(value: Any, source: Path, target: Path) -> Any:
 
 
 def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
-    run_dir = args.run_dir.resolve()
     original_target = args.target.resolve()
     original_audit_root = (args.audit_root or original_target).resolve()
     acquisition_root = (getattr(args, "acquisition_root", None) or original_audit_root).resolve()
     original_build_root = resolve_build_root(original_audit_root, args.build_root, boundary=acquisition_root)
-    validate_run_dir_isolation(run_dir, audit_root=original_audit_root, build_root=original_build_root)
+    run_dir = resolve_output_dir(
+        original_build_root,
+        output_dir=getattr(args, "output_dir", None),
+        legacy_run_dir=getattr(args, "run_dir", None),
+    )
+    validate_managed_output_root(run_dir, audit_root=original_audit_root, build_root=original_build_root)
     if run_dir.exists():
         if not run_dir.is_dir() or any(run_dir.iterdir()):
             raise ValueError(f"refusing to initialize non-empty run directory: {run_dir}")
@@ -799,6 +819,9 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         _log_routing(manifest, run_dir=staging)
         next_result = next_step(root, staging, verbose=args.verbose, emit=False)
         _load_run(root, staging)
+        run_layout = run_layout_metadata(original_build_root, run_dir)
+        validate_schema(root, "run-layout.schema.json", run_layout)
+        atomic_write_json(paths(staging)["run_layout"], run_layout)
 
         staged_run = staging
         if run_dir.exists():
@@ -842,6 +865,8 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         return {
             "stage": "INITIALIZED",
             "run_dir": str(run_dir),
+            "output_dir": str(run_dir),
+            "report_path": str(values["report"]),
             "manifest": str(values["manifest"]),
             "code_index": str(values["code_index"]),
             "progress_history": progress_history,
@@ -1472,7 +1497,7 @@ def _load_run(root: Path, run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]
         build_root = Path(recon_context["build_root"])
     except (KeyError, TypeError) as error:
         raise ValueError("routing manifest has no auditable target/build roots") from error
-    validate_run_dir_isolation(run_dir, audit_root=audit_root, build_root=build_root)
+    validate_managed_output_root(run_dir, audit_root=audit_root, build_root=build_root)
     registry = load_json(root / "data/canonical-checks.json")
     validate_manifest(root, manifest, registry)
     validate_target_snapshot(manifest, managed_output_root=run_dir)
@@ -1972,6 +1997,7 @@ def status_run(
             ),
         ),
         "recommended_execution": recommended_execution(run_dir, stage_name),
+        "location": _location_metadata(run_dir),
         "navigation": values["code_index_status"],
         "report_bundle": bundle_status,
         "report_generation": _report_generation_status(values, bundle_status),
@@ -3093,6 +3119,12 @@ def verify_poc(
     }
 
 
+def _add_existing_run_argument(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--output-dir", type=Path, help="initialized audit output root")
+    group.add_argument("--run-dir", type=Path, help="legacy alias for --output-dir")
+
+
 def _add_logging_flags(parser: argparse.ArgumentParser) -> None:
     logging = parser.add_mutually_exclusive_group()
     logging.add_argument("--quiet", action="store_true", help="suppress progress output")
@@ -3105,7 +3137,13 @@ def main(argv: list[str] | None = None) -> int:
 
     init = subparsers.add_parser("init")
     init.add_argument("target", type=Path)
-    init.add_argument("--run-dir", type=Path, required=True)
+    init_output = init.add_mutually_exclusive_group()
+    init_output.add_argument(
+        "--output-dir",
+        type=Path,
+        help="audit output root; defaults to <build-root>/.evm-auditor-work; relative paths resolve against the audited build root",
+    )
+    init_output.add_argument("--run-dir", type=Path, help="legacy alias for --output-dir")
     init.add_argument("--audit-root", type=Path)
     init.add_argument("--build-root", type=Path)
     init.add_argument("--acquisition-root", type=Path, help="stop automatic build-root discovery above this source boundary")
@@ -3150,12 +3188,12 @@ def main(argv: list[str] | None = None) -> int:
 
     for name in ("next", "status"):
         command = subparsers.add_parser(name)
-        command.add_argument("--run-dir", type=Path, required=True)
+        _add_existing_run_argument(command)
         command.add_argument("--root", type=Path, default=ROOT)
         _add_logging_flags(command)
 
     report = subparsers.add_parser("report")
-    report.add_argument("--run-dir", type=Path, required=True)
+    _add_existing_run_argument(report)
     report.add_argument("--root", type=Path, default=ROOT)
     report.add_argument("--severity-decisions", type=Path)
     report.add_argument("--finding-details", type=Path)
@@ -3163,13 +3201,13 @@ def main(argv: list[str] | None = None) -> int:
     _add_logging_flags(report)
 
     verify = subparsers.add_parser("verify-poc")
-    verify.add_argument("--run-dir", type=Path, required=True)
+    _add_existing_run_argument(verify)
     verify.add_argument("--root", type=Path, default=ROOT)
     verify.add_argument("--timeout", type=float, default=300)
     _add_logging_flags(verify)
 
     reports = subparsers.add_parser("reports")
-    reports.add_argument("--run-dir", type=Path, required=True)
+    _add_existing_run_argument(reports)
     reports.add_argument("--root", type=Path, default=ROOT)
     reports_mode = reports.add_mutually_exclusive_group(required=True)
     reports_mode.add_argument("--list", action="store_true", help="list report generations and recovery artifacts")
@@ -3180,7 +3218,9 @@ def main(argv: list[str] | None = None) -> int:
     _add_logging_flags(reports)
 
     models = subparsers.add_parser("models")
-    models.add_argument("--run-dir", type=Path)
+    models_output = models.add_mutually_exclusive_group()
+    models_output.add_argument("--output-dir", type=Path, help="initialized audit output root")
+    models_output.add_argument("--run-dir", type=Path, help="legacy alias for --output-dir")
     models.add_argument("--root", type=Path, default=ROOT)
     models.add_argument(
         "--provider",
@@ -3210,6 +3250,10 @@ def main(argv: list[str] | None = None) -> int:
     configure(quiet=args.quiet, verbose=args.verbose)
     try:
         root = args.root.resolve()
+        if args.command != "init":
+            args.run_dir = getattr(args, "output_dir", None) or args.run_dir
+            if args.run_dir is not None:
+                args.run_dir = args.run_dir.resolve()
         if args.command == "init":
             result = init_run(root, args)
         elif args.command == "next":

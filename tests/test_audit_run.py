@@ -840,6 +840,111 @@ class AuditRunTests(unittest.TestCase):
             ]
             self.assertEqual(leftovers, [])
 
+    def test_init_defaults_to_project_local_output_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "protocol").resolve()
+            (project / "src").mkdir(parents=True)
+            (project / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (project / "src" / "Protocol.sol").write_text(
+                "contract Protocol {}\n", encoding="utf-8"
+            )
+            output = project / ".evm-auditor-work"
+            result = self.run_cli(
+                "scripts/audit_run.py",
+                "init",
+                str(project),
+                "--domain",
+                "evm-audit-general",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["run_dir"], str(output))
+            self.assertEqual(payload["output_dir"], str(output))
+            self.assertEqual(payload["report_path"], str(output / "AUDIT-REPORT.md"))
+            self.assertTrue((output / "routing/manifest.json").is_file())
+            layout = json.loads((output / "config/run-layout.json").read_text(encoding="utf-8"))
+            self.assertEqual(layout["location_mode"], "PROJECT_LOCAL")
+            self.assertEqual(layout["workspace_root"], str(project))
+            self.assertEqual(layout["output_root"], str(output))
+            # The existing-run alias addresses the same bundle.
+            status = self.run_cli(
+                "scripts/audit_run.py", "status", "--output-dir", str(output)
+            )
+            self.assertEqual(status.returncode, 0, status.stderr)
+            self.assertEqual(json.loads(status.stdout)["location"]["run_dir"], str(output))
+            # Runtime views render inside the managed subtree without
+            # triggering the stale-target gate.
+            self.assertFalse(list(project.glob("*.verify-poc-*")))
+            followup = self.run_cli(
+                "scripts/audit_run.py", "next", "--output-dir", str(output)
+            )
+            self.assertEqual(followup.returncode, 0, followup.stderr)
+
+    def test_init_supports_relative_and_absolute_custom_output_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "protocol").resolve()
+            (project / "src").mkdir(parents=True)
+            (project / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (project / "src" / "Protocol.sol").write_text(
+                "contract Protocol {}\n", encoding="utf-8"
+            )
+            relative = self.run_cli(
+                "scripts/audit_run.py",
+                "init",
+                str(project),
+                "--domain",
+                "evm-audit-general",
+                "--output-dir",
+                "security/audit-001",
+            )
+            self.assertEqual(relative.returncode, 0, relative.stderr)
+            custom = project / "security" / "audit-001"
+            self.assertEqual(json.loads(relative.stdout)["output_dir"], str(custom))
+            self.assertTrue((custom / "routing/manifest.json").is_file())
+            self.assertEqual(
+                json.loads((custom / "config/run-layout.json").read_text(encoding="utf-8"))["location_mode"],
+                "PROJECT_LOCAL",
+            )
+            external = (Path(directory) / "external-audit").resolve()
+            absolute = self.run_cli(
+                "scripts/audit_run.py",
+                "init",
+                str(project),
+                "--domain",
+                "evm-audit-general",
+                "--output-dir",
+                str(external),
+            )
+            self.assertEqual(absolute.returncode, 0, absolute.stderr)
+            self.assertEqual(json.loads(absolute.stdout)["output_dir"], str(external))
+            self.assertEqual(
+                json.loads((external / "config/run-layout.json").read_text(encoding="utf-8"))["location_mode"],
+                "EXTERNAL",
+            )
+
+    def test_init_rejects_conflicting_and_unsafe_output_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "protocol").resolve()
+            (project / "src").mkdir(parents=True)
+            (project / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (project / "src" / "Protocol.sol").write_text(
+                "contract Protocol {}\n", encoding="utf-8"
+            )
+            common = (
+                "scripts/audit_run.py",
+                "init",
+                str(project),
+                "--domain",
+                "evm-audit-general",
+            )
+            both = self.run_cli(*common, "--output-dir", "a", "--run-dir", "b")
+            self.assertNotEqual(both.returncode, 0)
+            self.assertIn("not allowed with argument --output-dir", both.stderr)
+            project_root = self.run_cli(*common, "--output-dir", ".")
+            self.assertNotEqual(project_root.returncode, 0)
+            self.assertIn("build root", project_root.stderr)
+            self.assertFalse((project / "routing").exists())
+
     def test_e2e_clean_audit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory) / "run"

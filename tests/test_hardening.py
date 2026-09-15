@@ -26,7 +26,8 @@ from scripts.audit_artifacts import (
 from scripts.audit_run import _ensure_reporting_templates, _report_bundle_status, _runtime_view_current, paths as audit_paths
 from scripts.render_runtime import domain_context_template, domain_resolution_template, render, runtime_identity, runtime_metadata, screen_results_template
 from scripts.review_ledger import append
-from scripts.scope_context import compilation_digests, resolve_build_root, scope_inventory, validate_run_dir_isolation
+from evm_audit_runtime.output_layout import validate_managed_output_root
+from scripts.scope_context import compilation_digests, resolve_build_root, scope_inventory
 from scripts.synthesize_report import main as synthesize_main, synthesize
 from scripts.validate_audit_run import validate_run
 
@@ -99,13 +100,14 @@ class HardeningTests(unittest.TestCase):
             )
         )
 
-    def test_generated_artifact_and_run_directory_roots_are_isolated(self) -> None:
+    def test_generated_artifact_paths_respect_the_managed_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             audit = root / "project"
             build = root / "build"
             audit.mkdir()
             build.mkdir()
+            # Standalone use keeps the legacy strict rule.
             for candidate in (audit, audit / "run", build / "run"):
                 with self.subTest(candidate=candidate):
                     with self.assertRaisesRegex(ValueError, "outside"):
@@ -115,9 +117,50 @@ class HardeningTests(unittest.TestCase):
                             build_root=build,
                             label="artifact",
                         )
-            with self.assertRaisesRegex(ValueError, "outside audit_root"):
-                validate_run_dir_isolation(audit / "run", audit_root=audit, build_root=build)
-            validate_run_dir_isolation(root / "run", audit_root=audit, build_root=build)
+            managed = build / ".evm-auditor-work"
+            validate_generated_artifact_path(
+                managed / "report-bundle.json",
+                audit_root=audit,
+                build_root=build,
+                label="artifact",
+                managed_output_root=managed,
+            )
+            # Unmanaged project paths stay forbidden even with a managed root.
+            for candidate, pattern in (
+                (build / "src" / "evil.json", "managed output root"),
+                (managed / ".." / "escape.json", "managed output root"),
+                (audit / "evil.json", "managed output root"),
+            ):
+                with self.subTest(candidate=candidate):
+                    with self.assertRaisesRegex(ValueError, pattern):
+                        validate_generated_artifact_path(
+                            candidate,
+                            audit_root=audit,
+                            build_root=build,
+                            label="artifact",
+                            managed_output_root=managed,
+                        )
+
+    def test_managed_output_boundary_replaces_total_run_dir_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build = root / "project"
+            audit = build / "src"
+            audit.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, "build root"):
+                validate_managed_output_root(build, audit_root=audit, build_root=build)
+            with self.assertRaisesRegex(ValueError, "narrower audit root"):
+                validate_managed_output_root(audit / "run", audit_root=audit, build_root=build)
+            self.assertEqual(
+                validate_managed_output_root(
+                    build / ".evm-auditor-work", audit_root=audit, build_root=build
+                ),
+                "PROJECT_LOCAL",
+            )
+            self.assertEqual(
+                validate_managed_output_root(root / "run", audit_root=audit, build_root=build),
+                "EXTERNAL",
+            )
 
     def test_parent_directory_fsync_only_ignores_unsupported_errors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
