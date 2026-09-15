@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Install this checkout's evm-audit-* Skill packages (and, for ZCode, the
-# required custom worker agent definitions) via managed symlinks.
+# required custom worker agent definitions). Skill packages install as
+# managed symlinks; ZCode agent definition files are copied as regular
+# files, because ZCode does not register symlinked agent files in
+# ~/.zcode/agents.
 #
 # Usage: ./install.sh [zcode|codex]
 #
 # With no argument the agent is auto-detected only when exactly one of
 # ~/.zcode or ~/.codex exists. The script is idempotent. Installation is
 # all-or-nothing: every destination is preflighted first, and any conflict
-# (a foreign symlink or a user-created file) aborts with no mutation.
+# (a foreign symlink or a user-modified file) aborts with no mutation.
 # ZCode custom agents register at session start, so a new ZCode session is
 # required after installation.
 
@@ -58,26 +61,32 @@ if [ "$agent" = "zcode" ] && [ ! -d "$suite_agents_root" ]; then
   exit 1
 fi
 
-# Destination pairs: <link path> <target path>
-destinations=()
+# Skill destinations: <link path> <target path>, installed as managed symlinks.
+skill_dests=()
 for skill in "$repo_root"/skills/evm-audit-*; do
   [ -d "$skill" ] || continue
-  destinations+=("$skills_root/$(basename "$skill")" "$skill")
+  skill_dests+=("$skills_root/$(basename "$skill")" "$skill")
 done
+
+# Agent destinations: <copy path> <source path>, installed as regular file
+# copies (ZCode only registers real files in its agents directory).
+agent_dests=()
 if [ "$agent" = "zcode" ]; then
   for name in "${required_agents[@]}"; do
-    destinations+=("$agents_root/$name.md" "$suite_agents_root/$name.md")
+    agent_dests+=("$agents_root/$name.md" "$suite_agents_root/$name.md")
   done
 fi
 
 # Preflight: classify every destination before creating anything.
 conflicts=()
-todo=()
+todo_links=()
+todo_copies=()
+migrate_copies=()
 already=0
 i=0
-while [ "$i" -lt "${#destinations[@]}" ]; do
-  link="${destinations[$i]}"
-  target="${destinations[$((i + 1))]}"
+while [ "$i" -lt "${#skill_dests[@]}" ]; do
+  link="${skill_dests[$i]}"
+  target="${skill_dests[$((i + 1))]}"
   if [ ! -e "$target" ]; then
     echo "error: install source is missing: $target" >&2
     exit 1
@@ -91,7 +100,37 @@ while [ "$i" -lt "${#destinations[@]}" ]; do
   elif [ -e "$link" ]; then
     conflicts+=("$link exists and is not a symlink")
   else
-    todo+=("$link" "$target")
+    todo_links+=("$link" "$target")
+  fi
+  i=$((i + 2))
+done
+
+i=0
+while [ "$i" -lt "${#agent_dests[@]}" ]; do
+  dest="${agent_dests[$i]}"
+  src="${agent_dests[$((i + 1))]}"
+  if [ ! -f "$src" ]; then
+    echo "error: install source is missing: $src" >&2
+    exit 1
+  fi
+  if [ -L "$dest" ]; then
+    if [ "$(readlink "$dest")" = "$src" ]; then
+      # Managed symlink from a pre-copy release of this script; agents must
+      # be real files, so migrate it in place.
+      migrate_copies+=("$dest" "$src")
+    else
+      conflicts+=("$dest -> $(readlink "$dest") (expected a copy of $src)")
+    fi
+  elif [ -f "$dest" ]; then
+    if cmp -s "$dest" "$src"; then
+      already=$((already + 1))
+    else
+      conflicts+=("$dest exists with different content than $src")
+    fi
+  elif [ -e "$dest" ]; then
+    conflicts+=("$dest exists and is not a regular file")
+  else
+    todo_copies+=("$dest" "$src")
   fi
   i=$((i + 2))
 done
@@ -105,30 +144,58 @@ if [ "${#conflicts[@]}" -ne 0 ]; then
   exit 1
 fi
 
-# Apply: create only the missing links.
+# Apply: link only the missing skills, copy only the missing agents.
 mkdir -p "$skills_root"
-if [ "$agent" = "zcode" ]; then
-  mkdir -p "$agents_root"
-fi
 installed=0
 i=0
-while [ "$i" -lt "${#todo[@]}" ]; do
-  link="${todo[$i]}"
-  target="${todo[$((i + 1))]}"
+while [ "$i" -lt "${#todo_links[@]}" ]; do
+  link="${todo_links[$i]}"
+  target="${todo_links[$((i + 1))]}"
   ln -s "$target" "$link"
   echo "linked: $link"
   installed=$((installed + 1))
   i=$((i + 2))
 done
+if [ "$agent" = "zcode" ]; then
+  mkdir -p "$agents_root"
+  i=0
+  while [ "$i" -lt "${#todo_copies[@]}" ]; do
+    dest="${todo_copies[$i]}"
+    src="${todo_copies[$((i + 1))]}"
+    cp "$src" "$dest"
+    echo "copied: $dest"
+    installed=$((installed + 1))
+    i=$((i + 2))
+  done
+  i=0
+  while [ "$i" -lt "${#migrate_copies[@]}" ]; do
+    dest="${migrate_copies[$i]}"
+    src="${migrate_copies[$((i + 1))]}"
+    rm "$dest"
+    cp "$src" "$dest"
+    echo "migrated symlink to copy: $dest"
+    installed=$((installed + 1))
+    i=$((i + 2))
+  done
+fi
 
-# Verify: every destination resolves to this checkout.
+# Verify: every skill link resolves and every agent copy matches its source.
 failed=0
 i=0
-while [ "$i" -lt "${#destinations[@]}" ]; do
-  link="${destinations[$i]}"
-  target="${destinations[$((i + 1))]}"
+while [ "$i" -lt "${#skill_dests[@]}" ]; do
+  link="${skill_dests[$i]}"
   if [ ! -e "$link" ]; then
     echo "error: $link does not resolve after install" >&2
+    failed=1
+  fi
+  i=$((i + 2))
+done
+i=0
+while [ "$i" -lt "${#agent_dests[@]}" ]; do
+  dest="${agent_dests[$i]}"
+  src="${agent_dests[$((i + 1))]}"
+  if [ ! -f "$dest" ] || ! cmp -s "$dest" "$src"; then
+    echo "error: $dest is not a copy of $src after install" >&2
     failed=1
   fi
   i=$((i + 2))
@@ -144,7 +211,7 @@ if [ "$agent" = "zcode" ]; then
       exit 1
     fi
   done
-  echo "ok: skills available to $agent in $skills_root; worker agents installed in $agents_root"
+  echo "ok: skills available to $agent in $skills_root; worker agents copied to $agents_root"
   echo "note: a new ZCode session is required before custom agent definitions are registered"
 else
   echo "ok: skills available to $agent in $skills_root"

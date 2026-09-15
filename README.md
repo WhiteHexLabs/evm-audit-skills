@@ -24,9 +24,11 @@ cd evm-audit-skills
 ```
 
 For an existing checkout, run `./install.sh` from that directory instead.
-The script symlinks each Skill package into the agent's skills directory, is
-safe to re-run, and verifies the result; it refuses to replace entries it did
-not create. See [QUICKSTART.md](QUICKSTART.md) for the focused start guide.
+The script symlinks each Skill package into the agent's skills directory and
+copies the ZCode worker agent files into `~/.zcode/agents/` as regular files
+(ZCode does not register symlinked agent definitions). It is safe to re-run
+and verifies the result; it refuses to replace entries it did not create. See
+[QUICKSTART.md](QUICKSTART.md) for the focused start guide.
 
 ### 2. Open the target repository
 
