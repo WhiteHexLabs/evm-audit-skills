@@ -27,9 +27,9 @@ def _run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _make_run(directory: Path) -> tuple[Path, dict[str, Any]]:
-    """Materialize a minimal run directory carrying a valid two-domain manifest."""
-    _, _, _, manifest = build_manifest(domains=DOMAINS)
+def _make_run(directory: Path, domains: tuple[str, ...] = DOMAINS) -> tuple[Path, dict[str, Any]]:
+    """Materialize a minimal run directory carrying a valid multi-domain manifest."""
+    _, _, _, manifest = build_manifest(domains=domains)
     run_dir = directory / "run"
     (run_dir / "routing").mkdir(parents=True)
     (run_dir / "routing" / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -513,6 +513,233 @@ class DomainShardsTests(unittest.TestCase):
             self.assertTrue(all("unresolved_required" not in item for item in payload["context_shards"]))
             republished = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
             self.assertEqual(republished.returncode, 0, republished.stderr)
+
+
+class ContextShardTrustedAbsenceTests(unittest.TestCase):
+    """Write-time trusted-absence validation for context shards.
+
+    Every shipped Domain policy permits ``scope + inheritance`` and excludes
+    ``source``, so ``evm-audit-oracles.heartbeat`` reproduces the reported
+    failure class: a schema-valid ``NOT_APPLICABLE`` whose evidence violates
+    the owning Domain's ``trusted_absence_policy``.
+    """
+
+    DOMAINS = ("evm-audit-oracles", "evm-audit-general")
+
+    SCOPE_EVIDENCE = [{"kind": "scope", "location": "complete scope", "reason": "complete scope was inspected"}]
+    SOURCE_EVIDENCE = [{"kind": "source", "location": "Oracle.sol", "reason": "heartbeat reference not found"}]
+    INHERITANCE_EVIDENCE = [{"kind": "inheritance", "location": "contracts/", "reason": "no oracle interface is inherited"}]
+
+    def make_run(self, directory: Path) -> tuple[Path, dict[str, Any]]:
+        return _make_run(directory, domains=self.DOMAINS)
+
+    def context_inputs(self, manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        template = domain_context_template(manifest)
+        return {
+            domain: {
+                key: {"status": "KNOWN", "value": "fixture", "evidence": self.SCOPE_EVIDENCE}
+                for key in requirements
+            }
+            for domain, requirements in template["domains"].items()
+        }
+
+    def write_context(self, run_dir: Path, directory: Path, domain: str, context: dict[str, Any], *, tag: str = "") -> subprocess.CompletedProcess[str]:
+        source = directory / f"context-{domain}{tag}.json"
+        source.write_text(json.dumps({"context": context}) + "\n", encoding="utf-8")
+        return _run_cli(
+            "scripts/domain_shards.py", "write-context-shard",
+            "--run-dir", str(run_dir), "--domain", domain, "--input", str(source),
+        )
+
+    def write_all_context(self, run_dir: Path, directory: Path, manifest: dict[str, Any]) -> None:
+        for domain, context in sorted(self.context_inputs(manifest).items()):
+            result = self.write_context(run_dir, directory, domain, context)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def status(self, run_dir: Path) -> dict[str, Any]:
+        result = _run_cli("scripts/domain_shards.py", "status", "--run-dir", str(run_dir))
+        self.assertEqual(result.returncode, 0, f"status must not crash: {result.stderr}")
+        return json.loads(result.stdout)
+
+    def test_unknown_entry_remains_writable_but_blocks_merge(self) -> None:
+        """Test A: UNKNOWN is truthful writable shard data, never merge-ready."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+            inputs = self.context_inputs(manifest)
+            domain, key = "evm-audit-oracles", "heartbeat"
+            inputs[domain][key] = {"status": "UNKNOWN"}
+            for name, context in sorted(inputs.items()):
+                result = self.write_context(run_dir, directory, name, context)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((run_dir / f"reviews/shards/context-{domain}.json").exists())
+
+            payload = self.status(run_dir)
+            self.assertFalse(payload["context_merge_ready"])
+            self.assertEqual(payload["unresolved_context"], [f"{domain}.{key}"])
+            entry = next(item for item in payload["context_shards"] if item["owner_domain"] == domain)
+            self.assertTrue(entry["valid"], "an UNKNOWN shard is valid data, not a malformed shard")
+            self.assertEqual(entry["unresolved_required"], [f"{domain}.{key}"])
+
+            merge = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertNotEqual(merge.returncode, 0)
+            self.assertIn(f"merged context remains UNKNOWN for: {domain}.{key}", merge.stderr)
+            self.assertFalse((run_dir / "reviews/domain-context.json").exists())
+
+    def test_policy_valid_trusted_absence_is_accepted_and_merges(self) -> None:
+        """Test B: scope + inheritance trusted absence passes the Domain policy."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+            inputs = self.context_inputs(manifest)
+            domain, key = "evm-audit-oracles", "heartbeat"
+            inputs[domain][key] = {
+                "status": "NOT_APPLICABLE",
+                "scope_complete": True,
+                "evidence": self.SCOPE_EVIDENCE + self.INHERITANCE_EVIDENCE,
+            }
+            for name, context in sorted(inputs.items()):
+                result = self.write_context(run_dir, directory, name, context)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            self.assertTrue(self.status(run_dir)["context_merge_ready"])
+            merge = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertEqual(merge.returncode, 0, merge.stderr)
+            merged = load_json(run_dir / "reviews/domain-context.json")
+            self.assertEqual(
+                merged["domains"][domain][key]["status"], "NOT_APPLICABLE",
+            )
+
+    def test_disallowed_absence_evidence_kind_is_rejected_at_write_time(self) -> None:
+        """Test C: scope + source is schema-valid but policy-invalid; nothing is persisted."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+            inputs = self.context_inputs(manifest)
+            domain, key = "evm-audit-oracles", "heartbeat"
+            inputs[domain][key] = {
+                "status": "NOT_APPLICABLE",
+                "scope_complete": True,
+                "evidence": self.SCOPE_EVIDENCE + self.SOURCE_EVIDENCE,
+            }
+            result = self.write_context(run_dir, directory, domain, inputs[domain])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(f"{domain}.{key}", result.stderr)
+            self.assertIn("trusted_absence_policy", result.stderr)
+            self.assertFalse(
+                (run_dir / f"reviews/shards/context-{domain}.json").exists(),
+                "an invalid shard must not be persisted",
+            )
+            payload = self.status(run_dir)
+            self.assertIn(domain, payload["missing_context_shards"])
+            self.assertFalse(payload["context_merge_ready"])
+
+    def test_missing_scope_evidence_is_rejected_at_write_time(self) -> None:
+        """Test D: exclusion-dimension evidence alone never proves absence."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+            inputs = self.context_inputs(manifest)
+            domain, key = "evm-audit-oracles", "heartbeat"
+            inputs[domain][key] = {
+                "status": "NOT_APPLICABLE",
+                "scope_complete": True,
+                "evidence": self.INHERITANCE_EVIDENCE,
+            }
+            result = self.write_context(run_dir, directory, domain, inputs[domain])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires scope evidence", result.stderr)
+            self.assertFalse((run_dir / f"reviews/shards/context-{domain}.json").exists())
+
+    def test_incomplete_scope_is_rejected_at_write_time(self) -> None:
+        """Test E: scope_complete must be true for trusted absence."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+            inputs = self.context_inputs(manifest)
+            domain, key = "evm-audit-oracles", "heartbeat"
+            inputs[domain][key] = {
+                "status": "NOT_APPLICABLE",
+                "scope_complete": False,
+                "evidence": self.SCOPE_EVIDENCE + self.INHERITANCE_EVIDENCE,
+            }
+            result = self.write_context(run_dir, directory, domain, inputs[domain])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((run_dir / f"reviews/shards/context-{domain}.json").exists())
+
+    def test_missing_exclusion_dimension_is_rejected_at_write_time(self) -> None:
+        """Test F: scope evidence alone never proves absence."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+            inputs = self.context_inputs(manifest)
+            domain, key = "evm-audit-oracles", "heartbeat"
+            inputs[domain][key] = {
+                "status": "NOT_APPLICABLE",
+                "scope_complete": True,
+                "evidence": self.SCOPE_EVIDENCE,
+            }
+            result = self.write_context(run_dir, directory, domain, inputs[domain])
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("exclusion dimension", result.stderr)
+            self.assertFalse((run_dir / f"reviews/shards/context-{domain}.json").exists())
+
+    def test_failed_replacement_preserves_prior_valid_shard(self) -> None:
+        """Test G: a rejected rewrite leaves the existing shard byte-for-byte intact."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+            domain = "evm-audit-oracles"
+            valid = self.context_inputs(manifest)[domain]
+            result = self.write_context(run_dir, directory, domain, valid)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            shard_path = run_dir / f"reviews/shards/context-{domain}.json"
+            original = shard_path.read_bytes()
+
+            invalid = {
+                **valid,
+                "heartbeat": {
+                    "status": "NOT_APPLICABLE",
+                    "scope_complete": True,
+                    "evidence": self.SCOPE_EVIDENCE + self.SOURCE_EVIDENCE,
+                },
+            }
+            result = self.write_context(run_dir, directory, domain, invalid, tag="-invalid")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(shard_path.read_bytes(), original)
+            leftovers = [path.name for path in shard_path.parent.iterdir() if path.name != shard_path.name]
+            self.assertEqual(leftovers, [], "a failed write must leave no partial temporary shard")
+
+    def test_hand_edited_invalid_shard_remains_diagnosable(self) -> None:
+        """Test H: write-time validation is backed by status/merge defense in depth."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+            self.write_all_context(run_dir, directory, manifest)
+            self.assertTrue(self.status(run_dir)["context_merge_ready"])
+
+            # Bypass the writer entirely, as a hand edit would.
+            domain = "evm-audit-oracles"
+            shard_path = run_dir / f"reviews/shards/context-{domain}.json"
+            shard = load_json(shard_path)
+            shard["context"]["heartbeat"] = {
+                "status": "NOT_APPLICABLE",
+                "scope_complete": True,
+                "evidence": self.SCOPE_EVIDENCE + self.SOURCE_EVIDENCE,
+            }
+            shard_path.write_text(json.dumps(shard) + "\n", encoding="utf-8")
+
+            payload = self.status(run_dir)
+            self.assertIn(domain, payload["invalid_context_shards"])
+            self.assertFalse(payload["context_merge_ready"])
+            entry = next(item for item in payload["context_shards"] if item["owner_domain"] == domain)
+            self.assertFalse(entry["valid"])
+            self.assertIn("trusted_absence_policy", entry["error"])
+
+            merge = _run_cli("scripts/domain_shards.py", "merge-context", "--run-dir", str(run_dir))
+            self.assertNotEqual(merge.returncode, 0)
+            self.assertIn("trusted_absence_policy", merge.stderr)
+            self.assertFalse((run_dir / "reviews/domain-context.json").exists())
 
 
 def _concurrent_worker(directory: str, run_dir: str, domain: str, mode: str) -> None:

@@ -225,6 +225,24 @@ def _validate_context_shard(
         if extra:
             detail.append(f"unexpected keys: {', '.join(extra)}")
         raise ValueError(f"context shard for {domain!r} does not cover its required keys ({'; '.join(detail)})")
+    # Reject policy-invalid trusted absence at write time with the same
+    # validator the authoritative domain-context artifact uses downstream,
+    # so shard validity and merged validity can never drift.
+    policy = trusted_absence_policy(manifest, domain)
+    recon_quality = manifest.get("feature_map", {}).get("recon_context", {}).get("recon_quality")
+    for key in sorted(shard["context"]):
+        entry = shard["context"][key]
+        if entry.get("status") != "NOT_APPLICABLE":
+            continue
+        errors = validate_non_applicability(
+            evidence=entry.get("evidence"),
+            scope_complete=entry.get("scope_complete"),
+            trusted_absence_policy=policy,
+            recon_quality=recon_quality,
+            label=f"{domain}.{key}",
+        )
+        if errors:
+            raise ValueError("; ".join(errors))
 
 
 def write_screen_shard(root: Path, run_dir: Path, domain: str, input_path: Path) -> dict[str, Any]:
