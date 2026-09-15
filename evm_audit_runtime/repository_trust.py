@@ -9,7 +9,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 SOURCE_TRUSTS = frozenset({"TRUSTED", "UNTRUSTED", "UNKNOWN"})
@@ -118,10 +118,16 @@ def copy_tree(
     destination: Path,
     *,
     excluded_names: set[str] | frozenset[str] = frozenset(),
+    excluded_relative_paths: Iterable[Path] = (),
     allow_internal_symlinks: bool = False,
     allow_existing_empty: bool = False,
 ) -> None:
-    """Copy regular files without following external links or special files."""
+    """Copy regular files without following external links or special files.
+
+    ``excluded_relative_paths`` skips exact source-relative subtrees (for
+    example the managed audit output root inside a copied build tree) without
+    globally excluding any directory basename.
+    """
     source = source.resolve()
     requested_destination = Path(destination)
     if requested_destination.is_symlink():
@@ -132,6 +138,7 @@ def copy_tree(
     if destination == source or source in destination.parents:
         raise ValueError("copy destination must be outside the source")
     excluded = {".git", *excluded_names}
+    excluded_roots = tuple(path if path.is_absolute() else source / path for path in excluded_relative_paths)
     if destination.exists():
         if not allow_existing_empty or not destination.is_dir() or any(destination.iterdir()):
             raise ValueError(f"copy destination must be a missing directory: {destination}")
@@ -143,6 +150,8 @@ def copy_tree(
             if entry.name in excluded:
                 continue
             path = Path(entry.path)
+            if any(path == root or root in path.parents for root in excluded_roots):
+                continue
             target = output / entry.name
             mode = os.lstat(path).st_mode
             if stat.S_ISDIR(mode):

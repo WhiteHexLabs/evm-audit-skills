@@ -945,6 +945,30 @@ class AuditRunTests(unittest.TestCase):
             self.assertIn("build root", project_root.stderr)
             self.assertFalse((project / "routing").exists())
 
+    def test_poc_workspace_excludes_the_managed_run_subtree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = (Path(directory) / "protocol").resolve()
+            (project / "src").mkdir(parents=True)
+            (project / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            (project / "src" / "Protocol.sol").write_text(
+                "contract Protocol {}\n", encoding="utf-8"
+            )
+            run_dir = project / ".evm-auditor-work"
+            (run_dir / "poc").mkdir(parents=True)
+            (run_dir / "poc" / "Exploit.t.sol").write_text(
+                "contract ExploitTest {}\n", encoding="utf-8"
+            )
+            (run_dir / "AUDIT-REPORT.md").write_text("# report\n", encoding="utf-8")
+            workspace = audit_controller._isolated_poc_workspace(project, run_dir)
+            try:
+                self.assertFalse((workspace / ".evm-auditor-work").exists())
+                self.assertTrue((workspace / "src" / "Protocol.sol").is_file())
+                # The disposable workspace never lands inside the audited tree.
+                self.assertNotEqual(workspace.parent, project)
+                self.assertEqual(list(project.glob(".verify-poc-*")), [])
+            finally:
+                shutil.rmtree(workspace.parent, ignore_errors=True)
+
     def test_e2e_clean_audit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory) / "run"

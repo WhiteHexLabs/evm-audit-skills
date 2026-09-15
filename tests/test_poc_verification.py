@@ -112,6 +112,55 @@ class PocVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "symlink"):
                 controller._isolated_poc_workspace(build, base / "run")
 
+    def test_project_local_run_tree_is_excluded_from_the_workspace_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            build = base / "build"
+            (build / "src").mkdir(parents=True)
+            (build / "src/Protocol.sol").write_text("contract Protocol {}", encoding="utf-8")
+            run_dir = build / ".evm-auditor-work"
+            (run_dir / "poc").mkdir(parents=True)
+            (run_dir / "poc/Exploit.t.sol").write_text("contract Exploit {}", encoding="utf-8")
+            (run_dir / "AUDIT-REPORT.md").write_text("# report", encoding="utf-8")
+            workspace = controller._isolated_poc_workspace(build, run_dir)
+            try:
+                self.assertFalse((workspace / ".evm-auditor-work").exists())
+                self.assertTrue((workspace / "src/Protocol.sol").is_file())
+                # The disposable copy never lands inside the audited project.
+                self.assertNotEqual(workspace.parent, build)
+                self.assertEqual(list(build.glob(".verify-poc-*")), [])
+            finally:
+                shutil.rmtree(workspace.parent, ignore_errors=True)
+
+            # A custom-named managed root is excluded by exact path, while an
+            # unrelated directory sharing its basename is still copied.
+            custom = build / "security" / "audit-001"
+            custom.mkdir(parents=True)
+            (custom / "poc").mkdir()
+            (custom / "poc/Exploit.t.sol").write_text("contract Exploit {}", encoding="utf-8")
+            (build / "src" / "audit-001").mkdir()
+            (build / "src" / "audit-001" / "Real.sol").write_text(
+                "contract Real {}", encoding="utf-8"
+            )
+            workspace = controller._isolated_poc_workspace(build, custom)
+            try:
+                self.assertFalse((workspace / "security" / "audit-001").exists())
+                self.assertTrue((workspace / "src/audit-001/Real.sol").is_file())
+            finally:
+                shutil.rmtree(workspace.parent, ignore_errors=True)
+
+    def test_external_run_keeps_its_workspace_beside_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            build = base / "build"
+            build.mkdir()
+            run_dir = base / "run"
+            workspace = controller._isolated_poc_workspace(build, run_dir)
+            try:
+                self.assertEqual(workspace.parent.parent, base)
+            finally:
+                shutil.rmtree(workspace.parent, ignore_errors=True)
+
     def test_changed_source_cannot_be_staged_against_old_evidence_hash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

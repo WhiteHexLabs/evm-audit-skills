@@ -2840,14 +2840,35 @@ def _isolated_poc_workspace(build_root: Path, run_dir: Path) -> Path:
 
     Recorded commands must never mutate the authoritative target/build tree;
     tool default artifact outputs (out/, cache/, artifacts/) land in the copy.
+    The managed audit output subtree is excluded by exact relative path so the
+    verification workspace never contains a recursive copy of the audit run.
     """
-    parent = Path(tempfile.mkdtemp(prefix=".verify-poc-", dir=str(run_dir.parent)))
+    build_root = build_root.resolve()
+    run_dir = run_dir.resolve()
+    # Keep the workspace beside the run when that stays outside the build
+    # tree; project-local runs fall back to the system temp area so the
+    # disposable copy never pollutes the audited project.
+    beside_run = run_dir.parent
+    workspace_parent = (
+        beside_run
+        if beside_run != build_root and build_root not in beside_run.parents
+        else None
+    )
+    parent = Path(
+        tempfile.mkdtemp(
+            prefix=".verify-poc-", dir=str(workspace_parent) if workspace_parent else None
+        )
+    )
     try:
         project = parent / "project"
+        excluded_relative: tuple[Path, ...] = ()
+        if run_dir == build_root or build_root in run_dir.parents:
+            excluded_relative = (run_dir.relative_to(build_root),)
         copy_tree(
             build_root,
             project,
             excluded_names=_POC_WORKSPACE_EXCLUDED_DIRS,
+            excluded_relative_paths=excluded_relative,
             allow_internal_symlinks=True,
         )
     except BaseException:
