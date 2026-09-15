@@ -23,6 +23,7 @@ from scripts.codex_model_profile import default_profile, write_profile
 from scripts.domain_shards import (
     merge_context,
     merge_screen,
+    shard_status,
     write_context_shard,
     write_screen_shard,
 )
@@ -85,11 +86,23 @@ class OrchestrationLifecycleTests(unittest.TestCase):
         runtime = run_dir / "runtime"
         return sorted(path.name for path in runtime.glob(f"{profile}-*.md"))
 
-    def author_context_shards(self, run_dir: Path, directory: Path, manifest: dict[str, Any]) -> None:
+    def author_context_shards(
+        self,
+        run_dir: Path,
+        directory: Path,
+        manifest: dict[str, Any],
+        *,
+        overrides: dict[tuple[str, str], dict[str, Any]] | None = None,
+        only: str | None = None,
+    ) -> None:
+        overrides = overrides or {}
         template = domain_context_template(manifest)
         for domain, requirements in sorted(template["domains"].items()):
+            if only is not None and domain != only:
+                continue
             context = {
-                key: {"status": "KNOWN", "value": "fixture", "evidence": SCOPE_EVIDENCE}
+                key: overrides.get((domain, key))
+                or {"status": "KNOWN", "value": "fixture", "evidence": SCOPE_EVIDENCE}
                 for key in requirements
             }
             source = directory / f"context-{domain}.json"
@@ -393,6 +406,80 @@ class OrchestrationLifecycleTests(unittest.TestCase):
             result = self.next_stage(run_dir)
             self.assert_stage(result, "REPORT", agent=None)
             self.assertEqual(self.view_names(run_dir, "proof"), [])
+
+    def test_barrier_a_requires_status_readiness_before_merge(self) -> None:
+        """The context-wave state machine: not ready → no merge → targeted fix → ready.
+
+        Wave A quiescing with a required key left UNKNOWN is truthful worker
+        output: ``status`` must report it as unresolved (never merge-ready),
+        ``merge-context`` must refuse to publish, and only a targeted
+        per-Domain redispatch that resolves the key may unblock the barrier.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            run_dir, manifest = self.make_run(directory)
+
+            result = self.next_stage(run_dir)
+            self.assert_stage(result, "DOMAIN_CONTEXT", agent="evm-audit-worker-flash")
+
+            domain = "evm-audit-general"
+            key = sorted(domain_context_template(manifest)["domains"][domain])[0]
+            self.author_context_shards(
+                run_dir, directory, manifest, overrides={(domain, key): {"status": "UNKNOWN"}}
+            )
+            # `next` materializes the authoritative context file as the
+            # generated all-UNKNOWN template; barriers replace it, never
+            # append to it.
+            context_path = run_dir / "reviews/domain-context.json"
+            template_text = context_path.read_text(encoding="utf-8")
+
+            payload = shard_status(ROOT, run_dir)
+            self.assertFalse(payload["context_merge_ready"])
+            self.assertEqual(payload["unresolved_context"], [f"{domain}.{key}"])
+
+            # Barrier A must not treat merge-context as safe to run while
+            # readiness is false; the merge refuses to publish anything.
+            with self.assertRaises(ValueError):
+                merge_context(ROOT, run_dir)
+            self.assertEqual(
+                context_path.read_text(encoding="utf-8"), template_text,
+                "a refused merge must leave the authoritative template untouched",
+            )
+
+            # One targeted remediation pass rewrites only the affected Domain.
+            self.author_context_shards(run_dir, directory, manifest, only=domain)
+            payload = shard_status(ROOT, run_dir)
+            self.assertTrue(payload["context_merge_ready"], payload["context_merge_diagnostic"])
+
+            # Readiness alone publishes nothing; merge-context is the barrier.
+            self.assertEqual(context_path.read_text(encoding="utf-8"), template_text)
+            merge_context(ROOT, run_dir)
+            self.assertNotEqual(context_path.read_text(encoding="utf-8"), template_text)
+            result = self.next_stage(run_dir)
+            self.assert_stage(result, "SCREEN", agent="evm-audit-worker-deep")
+
+
+class ShippedOrchestrationContractTests(unittest.TestCase):
+    """Narrow semantic guarantees on the shipped worker/agent contracts."""
+
+    def test_flash_worker_permits_unknown_and_binds_absence_to_policy(self) -> None:
+        text = (
+            ROOT / "skills/evm-audit-master/agents/evm-audit-worker-flash.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("trusted_absence_policy", text)
+        self.assertIn("routing/manifest.json", text, "the policy source must be the snapshot-bound manifest")
+        self.assertIn("valid worker output", text)
+        self.assertIn("merely to make the shard mergeable", text)
+
+    def test_master_skill_context_contract_matches_runtime(self) -> None:
+        text = (ROOT / "skills/evm-audit-master/SKILL.md").read_text(encoding="utf-8")
+        self.assertNotIn("never left", "workers must not be forced out of UNKNOWN")
+        self.assertIn("blocks context merge readiness", text)
+        # Barrier A checks shard readiness via status before merging.
+        status_command = text.index("domain_shards.py status --run-dir")
+        merge_command = text.index("domain_shards.py merge-context --run-dir")
+        self.assertLess(status_command, merge_command)
+        self.assertIn("context_merge_ready == true", text)
 
 
 if __name__ == "__main__":

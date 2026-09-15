@@ -255,16 +255,45 @@ pins one model/thought-level contract):
 2. **Wave A — DOMAIN_CONTEXT** (`evm-audit-worker-flash`, one per Domain
    required for context). Each worker authors a context input
    `{"context": {...}}` covering exactly its Domain's required context keys
-   (every entry `KNOWN` or `NOT_APPLICABLE`, never left `UNKNOWN`) and
-   writes it with
+   and writes it with
    `python3 <suite-root>/scripts/domain_shards.py write-context-shard --run-dir <run-dir> --domain <domain> --input <file>`.
+   Every required key must be present in the shard. Each entry may be:
+   - `KNOWN` when established;
+   - `NOT_APPLICABLE` only when trusted absence is proven under the owning
+     Domain's `trusted_absence_policy` (the worker reads the effective
+     policy from its route entry in `routing/manifest.json`);
+   - `UNKNOWN` when evidence remains insufficient.
+   `UNKNOWN` is valid shard data but blocks context merge readiness. Never
+   manufacture `NOT_APPLICABLE` to force a merge.
    Quiesce all workers before any controller operation.
-3. **Barrier A (controller only).** `domain_shards.py merge-context --run-dir <run-dir>`
-   writes the authoritative `reviews/domain-context.json` (`status` reports
-   `context_merge_ready`; a present-but-invalid shard is never ready). Then
-   run `next` and require stage `SCREEN` with
-   `recommended_execution.agent == evm-audit-worker-deep`. Screen may start
-   only after both succeed.
+3. **Barrier A (controller only).** After every Domain Context worker is
+   quiescent, run
+   `python3 <suite-root>/scripts/domain_shards.py status --run-dir <run-dir>`
+   and inspect the returned machine-readable state. Only if
+   `context_merge_ready == true`, run
+   `domain_shards.py merge-context --run-dir <run-dir>`, which writes the
+   authoritative `reviews/domain-context.json`. The readiness check itself
+   publishes nothing; `merge-context` remains the publication barrier. If
+   readiness fails, fail closed and handle the reported reason — never
+   merge while `context_merge_ready == false`:
+   - missing context shards: redispatch only the missing owner Domains;
+   - invalid context shards (`invalid_context_shards`): redispatch only the
+     affected owner Domains with the diagnostic from `status`; never patch
+     shard JSON by hand or with a global repair script;
+   - `unresolved_context` (`UNKNOWN` keys): redispatch only the owner
+     Domains containing unresolved keys and give each worker the exact
+     unresolved keys. A worker may resolve a key to `KNOWN`, to policy-valid
+     `NOT_APPLICABLE`, or leave it `UNKNOWN` when it truly remains
+     unresolved; if it stays `UNKNOWN`, stop and surface the stage as
+     incomplete instead of coercing it to `NOT_APPLICABLE`.
+
+   Remediation is bounded: the initial wave plus at most one targeted
+   remediation pass for the missing/invalid/unresolved owner Domains, then
+   rerun `status`; if the run is still not ready, stop and surface the
+   diagnostic to the user. Never keep mutating artifacts until validation
+   passes. After a successful `merge-context`, run `next` and require stage
+   `SCREEN` with `recommended_execution.agent == evm-audit-worker-deep`.
+   Screen may start only after both succeed.
 4. **Wave B — SCREEN** (`evm-audit-worker-deep`, one per shard-owner
    Domain). Each worker authors a screen input `{"results": [...]}` covering
    exactly its Domain's selected checks (`CANDIDATE` or
