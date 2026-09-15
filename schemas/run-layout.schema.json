@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:evm-audit-skills:run-layout:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type", "schema_version", "workspace_root", "output_root", "location_mode"
+  ],
+  "properties": {
+    "artifact_type": {"const": "run-layout"},
+    "schema_version": {"const": 1},
+    "workspace_root": {"type": "string", "minLength": 1},
+    "output_root": {"type": "string", "minLength": 1},
+    "location_mode": {"enum": ["PROJECT_LOCAL", "EXTERNAL"]}
+  }
+}
