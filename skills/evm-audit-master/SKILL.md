@@ -19,7 +19,7 @@ Load this Skill first. Resolve `<suite-root>` as the nearest ancestor containing
 - `SUSPICIOUS` has no severity and must go through a later Vulnerability Validation (`PROOF`) event. Only `CONFIRMED` records enter the Final Report.
 - `CONFIRMED` requires strong proof of reachability, satisfiable preconditions, exploitability, and impact. A runnable PoC is a separate reporting requirement: only confirmed `High` and `Critical` findings require one; confirmed `Info`, `Low`, and `Medium` findings remain reportable without it.
 - Solidity POC source is user-owned evidence: archive audit-created or modified tests, helpers, and mocks under `<run-dir>/poc/` before proof, record the durable path in `proof` or `evidence.location`, and never delete or overwrite them after `PROOF` or report generation. Do not add new PoC files to the audited target after routing.
-- Keep `<run-dir>` as an external sibling of both the audit and build roots. The controller rejects equal or descendant paths, and pipeline outputs cannot overwrite authoritative source/build inputs.
+- Default the audit output to `<original-build-root>/.evm-auditor-work`. Pass `--output-dir <user path>` at initialization only when the user asks for a custom location (relative paths resolve against the audited build root; external directories remain supported). Consume the resolved `run_dir`/`output_dir` returned by `init` and reuse it for every later controller/worker command; all parallel workers share the same controller-owned run root, and no subagent invents its own output path. Pipeline outputs cannot overwrite authoritative source/build inputs: the managed subtree is excluded from scope discovery, digests, source snapshots, and PoC build-tree copies.
 
 ## Repository Trust Gate
 
@@ -70,12 +70,18 @@ migrate those internal IDs.
 ## Controller
 
 ```bash
-python3 <suite-root>/scripts/audit_run.py init <target> --run-dir <run-dir> --domain <domain>
-python3 <suite-root>/scripts/audit_run.py next --run-dir <run-dir>
-python3 <suite-root>/scripts/audit_run.py status --run-dir <run-dir>
-python3 <suite-root>/scripts/audit_run.py report --run-dir <run-dir>
-python3 <suite-root>/scripts/audit_run.py verify-poc --run-dir <run-dir>
+python3 <suite-root>/scripts/audit_run.py init <target> --domain <domain>
+# output defaults to <original-build-root>/.evm-auditor-work; add
+# --output-dir <path> for a custom location and keep --run-dir as its legacy alias
+python3 <suite-root>/scripts/audit_run.py next --output-dir <run-dir>
+python3 <suite-root>/scripts/audit_run.py status --output-dir <run-dir>
+python3 <suite-root>/scripts/audit_run.py report --output-dir <run-dir>
+python3 <suite-root>/scripts/audit_run.py verify-poc --output-dir <run-dir>
 ```
+
+Reuse the exact resolved `run_dir` reported by `init` for every later
+controller or worker command; the report is written to
+`<run-dir>/AUDIT-REPORT.md`.
 
 The controller emits compact progress to stderr by default. Use `--verbose` to
 forward child diagnostics or `--quiet` to suppress normal progress; the flags
@@ -314,9 +320,12 @@ pins one model/thought-level contract):
    unconditionally one worker per Domain. Each worker appends only
    `DEEP_REVIEW` records to its own ledger
    `<run-dir>/reviews/review-<domain>.jsonl` via
-   `python3 <suite-root>/scripts/review_ledger.py --manifest <run-dir>/routing/manifest.json --screen-results <run-dir>/reviews/screen-results.json --domain-context <run-dir>/reviews/domain-context.json --ledger <run-dir>/reviews/review-<domain>.jsonl --append-record <record.json>`
+   `python3 <suite-root>/scripts/review_ledger.py --manifest <run-dir>/routing/manifest.json --screen-results <run-dir>/reviews/screen-results.json --domain-context <run-dir>/reviews/domain-context.json --ledger <run-dir>/reviews/review-<domain>.jsonl --managed-output-root <run-dir> --append-record <record.json>`
    (add `--domain-resolution <run-dir>/reviews/domain-resolution.json` when
-   Deferred Domains exist). Append-only, one record at a time; the ledger
+   Deferred Domains exist). `--managed-output-root <run-dir>` is mandatory:
+   it tells the engine-owned validators which subtree holds generated audit
+   output so published artifacts and PoC sources never look like target
+   mutations. Append-only, one record at a time; the ledger
    validates revisions, lifecycle transitions, and snapshot binding. Quiesce
    all workers, then run `next`:
    - `REPORT` → no `SUSPICIOUS` records: skip Proof, go to reporting.

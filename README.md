@@ -173,11 +173,21 @@ clean audit, and stale review artifacts are not reused. See
 
 ## Audit Output
 
-Runs are written to an external sibling such as `../<repo>-audit-run/`, never
-inside the target or build root. `AUDIT-REPORT.md`
-contains only `CONFIRMED` findings; supporting Project Analysis, Context
-Analysis, Initial Review, Deep Audit, and Vulnerability Validation artifacts
-remain beside it.
+Runs default to one managed output subtree inside the audited project:
+
+```text
+/path/to/project/.evm-auditor-work/AUDIT-REPORT.md
+```
+
+Pass `--output-dir <path>` at initialization for a custom project-local or
+external location (`--run-dir` remains a legacy alias). The managed subtree is
+excluded from audit scope discovery, compilation fingerprints, source
+snapshots, and PoC build-tree copies; everything outside it remains
+authoritative input. `AUDIT-REPORT.md` contains only `CONFIRMED` findings;
+supporting Project Analysis, Context Analysis, Initial Review, Deep Audit, and
+Vulnerability Validation artifacts remain beside it. Users who do not want the
+output appearing as untracked files may add `.evm-auditor-work/` to their
+`.gitignore`.
 
 ## Using Individual Domain Skills
 

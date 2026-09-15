@@ -11,7 +11,8 @@ source → Project Analysis (`RECON`/`ROUTING`) → Environment Gate → Domain 
        → severity → runnable PoC gate for High/Critical → Final Report (`REPORT`)
 ```
 
-Standalone runs use an external run directory and run Project Analysis once.
+Standalone runs use the controller-owned output directory and run Project
+Analysis once.
 Orchestrated Domain agents consume the shared context, immutable manifest,
 Initial Review results, and rendered runtime file without rerunning routing.
 
@@ -92,10 +93,17 @@ Automatic build-root discovery is bounded to the acquisition root. Use
 explicitly when compilation needs a wider context; unrelated ambient parent
 projects are never inferred.
 
-Place the run directory outside the target and build roots, preferably as an
-external sibling such as `../protocol-audit-run/`. Resolved equal or descendant
-paths are rejected, and generated pipeline artifacts are forbidden from writing
-into authoritative source/build trees.
+Runs default to the managed output subtree
+`<build-root>/.evm-auditor-work/`; pass `--output-dir <path>` for a custom
+project-local or external location (`--run-dir` is a legacy alias, and
+relative custom paths resolve against the audited build root). Output equal to
+the project/build root, inside `.git` or dependency/build/cache trees, or
+nested inside a narrower audit root is rejected. The managed subtree is
+excluded from scope discovery, compilation digests, source snapshots, and PoC
+build-tree copies, and its physical location is recorded only in the
+operational `config/run-layout.json` sidecar, never in routing identity.
+Generated pipeline artifacts are still forbidden from writing into
+authoritative source/build trees.
 
 The low-level CLIs below are runtime interfaces. The short user-facing entry
 point is `scripts/audit_run.py`; its `next` command returns the next required

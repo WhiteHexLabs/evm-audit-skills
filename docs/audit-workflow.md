@@ -83,8 +83,10 @@ context comes from the surrounding Foundry project and its configured
 dependencies. Recon keeps those two boundaries distinct so the audit does not
 silently omit code needed to understand the target.
 
-Keep mutable run artifacts in an external sibling directory such as
-`../protocol-audit-run/`; the target and build trees are authoritative inputs.
+Run artifacts default to the managed output subtree
+`<build-root>/.evm-auditor-work/` (custom `--output-dir` locations are
+supported); the target and build trees outside that subtree are authoritative
+inputs and are never overwritten.
 Recon rejects source/build changes observed during its analysis window, and
 PoC verification works from a disposable copy so it cannot mutate those inputs
 through the verification workspace. Recon publishes no Feature Map or code

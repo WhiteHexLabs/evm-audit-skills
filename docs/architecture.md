@@ -13,8 +13,11 @@ REPORTING  Final Report (`REPORT`) → confirmed-only synthesis → severity →
 ```
 
 The authority boundary is explicit: the target/build tree is immutable audit
-input, an external sibling `<run-dir>` is mutable authoring state, and
-`report-generations/` contains immutable derived outputs. High/Critical PoC
+input, the controller owns one explicitly managed output subtree
+(`<build-root>/.evm-auditor-work` by default, or an explicit `--output-dir`)
+that is excluded from scope discovery, compilation fingerprints, source
+snapshots, and PoC build-tree copies, and `report-generations/` contains
+immutable derived outputs. High/Critical PoC
 sources are copied into the generation; recorded commands execute only through
 the explicit `verify-poc` command. Verification copies dependencies into a
 disposable workspace, stages the exact validated PoC bytes, rejects external

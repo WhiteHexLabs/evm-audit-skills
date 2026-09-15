@@ -257,10 +257,15 @@ should be written atomically whenever practical.
 
 Do not leave partially written JSON, JSONL, Markdown, or sidecar metadata that can be mistaken for complete output.
 
-The target/build tree is immutable authoritative audit input. Mutable run state
-must live in an external sibling run directory; resolved run paths equal to or
-below either authoritative root are rejected. Generated outputs must not write
-over source, build configuration, dependency metadata, or lockfiles. Report
+The target/build trees are immutable authoritative audit input. The controller
+owns one explicitly managed output subtree (`<build-root>/.evm-auditor-work` by
+default, or an explicit `--output-dir`), which is excluded from audit scope
+discovery, compilation fingerprints, source snapshots, and PoC build-tree
+copies. Resolved output paths equal to either authoritative root, inside
+`.git` or dependency/build/cache trees, or nested inside a narrower audit root
+are rejected; external output directories remain supported. Everything outside
+the managed output subtree remains authoritative input. Generated outputs must
+not write over source, build configuration, dependency metadata, or lockfiles. Report
 generations are immutable derived outputs, and High/Critical PoC source bytes
 are snapshotted under their generation. Recorded PoC commands run only through
 the explicit `verify-poc` command, with structured argv and `shell=False`.

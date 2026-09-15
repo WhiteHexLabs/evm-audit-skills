@@ -33,14 +33,19 @@ both modes.
 
 ## 3. Read the artifacts
 
-Choose an external sibling run directory, for example:
+Audit output lands inside the audited project by default:
 
 ```text
-../<repo>-audit-run/
+<repo>/.evm-auditor-work/
 ```
 
-The target/build tree is authoritative input and the run directory is mutable
-authoring state; equal or descendant run paths are rejected.
+Pass `--output-dir <path>` at initialization for a custom location: relative
+paths resolve against the project's build root, and external directories stay
+supported (`--run-dir` remains a legacy alias). The authoritative source/build
+inputs are immutable: the controller owns one explicitly managed output
+subtree, which is excluded from audit scope discovery, compilation
+fingerprints, source snapshots, and PoC build-tree copies. Using the project
+root itself as the output directory is rejected.
 
 Open `AUDIT-REPORT.md` for the final findings. Supporting Project Analysis,
 Context Analysis, Initial Review, Deep Audit, and Vulnerability Validation
