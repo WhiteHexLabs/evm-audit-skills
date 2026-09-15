@@ -28,6 +28,7 @@ SCHEMA_VERSIONS = {
     "report-bundle": 3,
     "report-current": 3,
     "repository-trust": 1,
+    "run-layout": 1,
     "runtime-metadata": 2,
     "screen-results": 2,
     "screen-shard": 1,
@@ -56,6 +57,7 @@ ROUTING_MANIFEST_VERSION = SCHEMA_VERSIONS["routing-manifest"]
 REPORT_BUNDLE_VERSION = SCHEMA_VERSIONS["report-bundle"]
 REPORT_CURRENT_VERSION = SCHEMA_VERSIONS["report-current"]
 REPOSITORY_TRUST_VERSION = SCHEMA_VERSIONS["repository-trust"]
+RUN_LAYOUT_VERSION = SCHEMA_VERSIONS["run-layout"]
 RUNTIME_METADATA_VERSION = SCHEMA_VERSIONS["runtime-metadata"]
 SCREEN_RESULTS_VERSION = SCHEMA_VERSIONS["screen-results"]
 SCREEN_SHARD_VERSION = SCHEMA_VERSIONS["screen-shard"]

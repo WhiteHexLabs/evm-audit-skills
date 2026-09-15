@@ -21,9 +21,31 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
-    from scope_context import DEFAULT_DEPENDENCY_ROOTS, compilation_digests, conservative_input_snapshot, relative_scope_path, resolve_build_root, resolve_scope_root, scope_inventory, source_digest
+    from scope_context import (
+        DEFAULT_DEPENDENCY_ROOTS,
+        compilation_digests,
+        conservative_input_snapshot,
+        excluded_by_root,
+        relative_excluded_roots,
+        relative_scope_path,
+        resolve_build_root,
+        resolve_scope_root,
+        scope_inventory,
+        source_digest,
+    )
 except ImportError:  # pragma: no cover - supports importing from another cwd
-    from scripts.scope_context import DEFAULT_DEPENDENCY_ROOTS, compilation_digests, conservative_input_snapshot, relative_scope_path, resolve_build_root, resolve_scope_root, scope_inventory, source_digest
+    from scripts.scope_context import (
+        DEFAULT_DEPENDENCY_ROOTS,
+        compilation_digests,
+        conservative_input_snapshot,
+        excluded_by_root,
+        relative_excluded_roots,
+        relative_scope_path,
+        resolve_build_root,
+        resolve_scope_root,
+        scope_inventory,
+        source_digest,
+    )
 
 try:
     from audit_artifacts import atomic_write_text, require_distinct_paths, restore_file, sha256_bytes, snapshot_file, validate_generated_artifact_path, validate_schema
@@ -279,15 +301,22 @@ def analyzed_source_paths(slither: Any, scope_root: Path, audit_files: set[str] 
     return sorted(analyzed)
 
 
-def compilation_unit_paths(slither: Any, build_root: Path) -> list[str] | None:
+def compilation_unit_paths(
+    slither: Any,
+    build_root: Path,
+    excluded_roots: tuple[Path, ...] = (),
+) -> list[str] | None:
     """Return the exact closure, or None when Slither cannot expose it.
 
     An observed source outside ``build_root`` is an integrity error, not a
-    reason to use the broad build-root fallback.
+    reason to use the broad build-root fallback. Sources inside the
+    engine-managed output root are generated audit artifacts, never
+    compilation inputs.
     """
     units = getattr(getattr(slither, "crytic_compile", None), "compilation_units", None)
     if not isinstance(units, dict) or not units:
         return None
+    managed_prefixes = relative_excluded_roots(build_root, excluded_roots)
     paths: set[str] = set()
     for unit in units.values():
         filenames = getattr(unit, "filenames", None)
@@ -296,12 +325,15 @@ def compilation_unit_paths(slither: Any, build_root: Path) -> list[str] | None:
         for filename in filenames:
             absolute = Path(str(getattr(filename, "absolute", filename))).resolve()
             try:
-                paths.add(absolute.relative_to(build_root.resolve()).as_posix())
+                relative = absolute.relative_to(build_root.resolve())
             except ValueError as error:
                 raise ValueError(
                     "compiled source is outside build_root; choose a build_root "
                     f"that contains the complete compilation closure: {absolute}"
                 ) from error
+            if excluded_by_root(relative, managed_prefixes):
+                continue
+            paths.add(relative.as_posix())
     return sorted(paths) or None
 
 
@@ -370,6 +402,7 @@ def build_feature_map(
     code_index_out: Path | None = None,
     feature_map_out: Path | None = None,
     acquisition_root: Path | None = None,
+    managed_output_root: Path | None = None,
 ) -> dict[str, Any]:
     feature_data = json.loads((root / "data" / "features.json").read_text(encoding="utf-8"))
     feature_names = sorted(feature_data["features"])
@@ -382,7 +415,10 @@ def build_feature_map(
             "repository trust gate blocked the original source; create a sanitized snapshot "
             "with scripts/repository_preflight.py before Recon"
         )
-    scope_files, excluded_paths = scope_inventory(scope_root, exclusions, include_patterns, dependency_roots)
+    excluded_roots = (managed_output_root,) if managed_output_root is not None else ()
+    scope_files, excluded_paths = scope_inventory(
+        scope_root, exclusions, include_patterns, dependency_roots, excluded_roots
+    )
     validate_output_targets(
         scope_root,
         compilation_root,
@@ -396,6 +432,7 @@ def build_feature_map(
                 audit_root=scope_root,
                 build_root=compilation_root,
                 label=label,
+                managed_output_root=managed_output_root,
             )
     audit_files = set(scope_files)
     pre_snapshot = conservative_input_snapshot(
@@ -405,13 +442,14 @@ def build_feature_map(
         include_patterns=include_patterns,
         dependency_roots=dependency_roots,
         boundary=acquisition_root or scope_root,
+        excluded_roots=excluded_roots,
     )
     Slither = ensure_slither_import()
     kwargs: dict[str, Any] = {}
     if solc:
         kwargs["solc"] = solc
     slither = Slither(str(target.resolve()), **kwargs)
-    closure_files = compilation_unit_paths(slither, compilation_root)
+    closure_files = compilation_unit_paths(slither, compilation_root, excluded_roots)
     detected = detect(slither, detector_config, scope_root, audit_files)
     files_analyzed = analyzed_source_paths(slither, scope_root, audit_files)
     uncompiled_paths = sorted(set(scope_files) - set(files_analyzed))
@@ -454,6 +492,7 @@ def build_feature_map(
         boundary=acquisition_root or scope_root,
         compilation_files=closure_files,
         compiler_versions=compiler_versions,
+        excluded_roots=excluded_roots,
     )
     recon_context = {
         "target_root": str(scope_root),
@@ -494,6 +533,7 @@ def build_feature_map(
             audit_files,
             recon_context["source_digest"],
             recon_context["compilation_input_digest"],
+            managed_output_root=managed_output_root,
         )
         validate_schema(root, "code-index.schema.json", code_index)
         code_index_serialized = json.dumps(code_index, ensure_ascii=False, indent=2) + "\n"
@@ -509,6 +549,7 @@ def build_feature_map(
         include_patterns=include_patterns,
         dependency_roots=dependency_roots,
         boundary=acquisition_root or scope_root,
+        excluded_roots=excluded_roots,
     )
     if pre_snapshot != post_snapshot:
         raise ValueError("source/build inputs changed during Recon; retry from a stable checkout")
@@ -535,6 +576,7 @@ def build_feature_map(
             include_patterns=include_patterns,
             dependency_roots=dependency_roots,
             boundary=acquisition_root or scope_root,
+            excluded_roots=excluded_roots,
         ) != pre_snapshot:
             raise ValueError("source/build inputs changed during Recon; retry from a stable checkout")
     except Exception:
@@ -557,6 +599,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--include", action="append", default=[], help="include a normally dependency-only audit path; repeatable")
     parser.add_argument("--dependency-root", action="append", default=None, help="top-level dependency root; repeatable")
     parser.add_argument("--present-only", action="store_true", help="leave detector absences UNKNOWN")
+    parser.add_argument(
+        "--managed-output-root",
+        type=Path,
+        help="controller-owned audit output root; engine-excluded from scope, digests, snapshots, and code-index inputs",
+    )
     parser.add_argument("--output", type=Path, help="write JSON to this path instead of stdout")
     parser.add_argument("--code-index-out", type=Path, help="write a snapshot-bound source navigation index")
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
@@ -583,6 +630,7 @@ def main(argv: list[str] | None = None) -> int:
             args.code_index_out,
             args.output,
             acquisition_root=args.acquisition_root,
+            managed_output_root=args.managed_output_root,
         )
         rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         if not args.output:

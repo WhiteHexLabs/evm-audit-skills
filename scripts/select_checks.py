@@ -262,6 +262,7 @@ def validate_recon_context(
     include_patterns: tuple[str, ...] = (),
     dependency_roots: tuple[str, ...] = tuple(sorted(DEFAULT_DEPENDENCY_ROOTS)),
     require_complete: bool = False,
+    managed_output_root: Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise SelectionInputError("Feature Map v4 requires recon_context")
@@ -354,7 +355,8 @@ def validate_recon_context(
         raise SelectionInputError("Feature Map v4 selection requires --target-root")
     resolved = resolve_scope_root(target_root)
     resolved_build_root = resolve_build_root(resolved, build_root, boundary=acquisition_root or resolved)
-    files, excluded = scope_inventory(resolved, exclusions, include_values, dependency_values)
+    excluded_roots = (managed_output_root,) if managed_output_root is not None else ()
+    files, excluded = scope_inventory(resolved, exclusions, include_values, dependency_values, excluded_roots)
     scope_files = set(files)
     actual_digest = source_digest(resolved, files)
     if actual_digest != raw["source_digest"]:
@@ -368,6 +370,7 @@ def validate_recon_context(
         compilation_files=compilation_values,
         compiler_versions=compiler_values,
         boundary=acquisition_root or resolved,
+        excluded_roots=excluded_roots,
     )
     for key, value in actual_digests.items():
         if raw[key] != value:
@@ -425,6 +428,7 @@ def normalize_feature_map(
     include_patterns: tuple[str, ...] = (),
     dependency_roots: tuple[str, ...] = tuple(sorted(DEFAULT_DEPENDENCY_ROOTS)),
     require_complete: bool = False,
+    managed_output_root: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     if raw.get("schema_version") != FEATURE_MAP_VERSION:
         raise SelectionInputError(f"feature map schema_version must be {FEATURE_MAP_VERSION}")
@@ -437,6 +441,7 @@ def normalize_feature_map(
         include_patterns=include_patterns,
         dependency_roots=dependency_roots,
         require_complete=require_complete,
+        managed_output_root=managed_output_root,
     )
     entries = raw.get("features")
     if not isinstance(entries, dict):
@@ -864,6 +869,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-root", type=Path, required=True, help="current audit scope used to verify recon source_digest")
     parser.add_argument("--build-root", type=Path, help="compilation/build project root; must match Recon")
     parser.add_argument("--acquisition-root", type=Path, help="stop automatic build-root discovery above this source boundary")
+    parser.add_argument(
+        "--managed-output-root",
+        type=Path,
+        help="controller-owned audit output root; excluded from scope and digest recomputation when the run lives inside the audited project",
+    )
     parser.add_argument("--exclude", action="append", default=[], help="additional audit-scope glob; must match Recon")
     parser.add_argument("--include", action="append", default=[], help="include a normally dependency-only audit path; must match Recon")
     parser.add_argument("--dependency-root", action="append", default=None, help="top-level dependency root; must match Recon")
@@ -922,6 +932,7 @@ def main(argv: list[str] | None = None) -> int:
                     audit_root=resolve_scope_root(args.target_root),
                     build_root=resolved_build_root,
                     label=label,
+                    managed_output_root=args.managed_output_root,
                 )
         feature_map = normalize_feature_map(
             raw_feature_map,
@@ -934,6 +945,7 @@ def main(argv: list[str] | None = None) -> int:
             include_patterns=include_patterns,
             dependency_roots=dependency_roots,
             require_complete=args.require_complete_compilation,
+            managed_output_root=args.managed_output_root,
         )
         recon_context = validate_recon_context(
             raw_feature_map["recon_context"],
@@ -944,6 +956,7 @@ def main(argv: list[str] | None = None) -> int:
             include_patterns=include_patterns,
             dependency_roots=dependency_roots,
             require_complete=args.require_complete_compilation,
+            managed_output_root=args.managed_output_root,
         )
         domain_configs = load_domains(root)
         scope_domains = parse_domains(args, set(domain_configs))

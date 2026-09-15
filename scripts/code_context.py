@@ -93,6 +93,18 @@ def _index_location(path: Path, build_root: Path) -> str:
     return "build://" if relative == "." else f"build://{relative}"
 
 
+def _under_managed_root(value: Any, managed_root: Path | None) -> bool:
+    """True when a Slither object is declared inside the managed output tree."""
+    if managed_root is None:
+        return False
+    filename_value = getattr(getattr(_mapping(value), "filename", None), "absolute", None)
+    if not filename_value:
+        return False
+    absolute = Path(str(filename_value)).resolve()
+    resolved = managed_root.resolve()
+    return absolute == resolved or resolved in absolute.parents
+
+
 def _location(
     value: Any,
     scope_root: Path,
@@ -243,6 +255,8 @@ def build_code_index(
     audit_files: set[str],
     source_digest: str,
     compilation_input_digest: str,
+    *,
+    managed_output_root: Path | None = None,
 ) -> dict[str, Any]:
     api = _slither_api()
     scope_root = scope_root.resolve()
@@ -258,7 +272,12 @@ def build_code_index(
     function_ids: dict[int, str] = {}
     function_entries: list[tuple[Any, Any, str, tuple[str, int, int, str, bool]]] = []
 
-    contract_values = list(getattr(slither, "contracts", []) or [])
+    # Generated audit output (PoC sources) is never a navigation input.
+    contract_values = [
+        value
+        for value in (getattr(slither, "contracts", []) or [])
+        if not _under_managed_root(value, managed_output_root)
+    ]
     contract_values.sort(
         key=lambda value: (
             _location(value, scope_root, build_root, audit_files)[0],

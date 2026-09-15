@@ -167,7 +167,7 @@ class ReconTests(unittest.TestCase):
                 target.write_text(target.read_text(encoding="utf-8") + "// changed during Recon\n", encoding="utf-8")
                 return value
 
-            def fake_index(_slither, scope_root, build_root, _audit_files, source_digest, compilation_digest):
+            def fake_index(_slither, scope_root, build_root, _audit_files, source_digest, compilation_digest, managed_output_root=None):
                 return {
                     "schema_version": 2,
                     "target_root": str(scope_root),

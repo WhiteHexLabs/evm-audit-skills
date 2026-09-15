@@ -172,13 +172,29 @@ def validate_generated_artifact_path(
     audit_root: Path,
     build_root: Path,
     label: str,
+    managed_output_root: Path | None = None,
 ) -> None:
-    """Keep security-sensitive generated artifacts outside authoritative trees."""
-    resolved = path.resolve()
-    for root_label, root in (("audit_root", audit_root), ("build_root", build_root)):
-        resolved_root = root.resolve()
-        if resolved == resolved_root or resolved_root in resolved.parents:
-            raise ValueError(f"{label} must be outside {root_label}: {resolved}")
+    """Keep security-sensitive generated artifacts inside the managed boundary.
+
+    With a ``managed_output_root`` (already accepted by the output-layout
+    validator) the artifact must resolve strictly inside that one subtree and
+    must not escape it through ``..`` or symlinks. Standalone low-level use
+    without a managed root keeps the legacy strict rule: the artifact must
+    live outside both authoritative trees.
+    """
+    requested = Path(path)
+    resolved = requested.resolve()
+    if managed_output_root is None:
+        for root_label, root in (("audit_root", audit_root), ("build_root", build_root)):
+            resolved_root = root.resolve()
+            if resolved == resolved_root or resolved_root in resolved.parents:
+                raise ValueError(f"{label} must be outside {root_label}: {resolved}")
+        return
+    managed = managed_output_root.resolve()
+    if requested.is_symlink():
+        raise ValueError(f"{label} must not be a symlink: {resolved}")
+    if managed not in resolved.parents:
+        raise ValueError(f"{label} must stay inside the managed output root {managed}: {resolved}")
 
 
 def json_text(value: Any) -> str:
@@ -1034,8 +1050,18 @@ def derive_review_snapshot_id(
     return review_snapshot_id(manifest, domain_resolution, domain_context, screen_results)
 
 
-def validate_target_snapshot(manifest: dict[str, Any]) -> None:
-    """Reject consumption of a manifest after the audited target changed."""
+def validate_target_snapshot(
+    manifest: dict[str, Any],
+    *,
+    managed_output_root: Path | None = None,
+) -> None:
+    """Reject consumption of a manifest after the audited target changed.
+
+    ``managed_output_root`` excludes the controller-owned output subtree from
+    the recomputed inventory and digests, so artifacts published after Recon
+    do not look like target mutations. Only that subtree is ignored; every
+    other project change still invalidates the snapshot.
+    """
     try:
         from scope_context import compilation_digests, resolve_build_root, resolve_scope_root, scope_inventory
     except ImportError:  # pragma: no cover - supports package-style imports
@@ -1047,7 +1073,10 @@ def validate_target_snapshot(manifest: dict[str, Any]) -> None:
     exclusions = tuple(recon["exclusion_patterns"])
     includes = tuple(recon.get("include_patterns", ()))
     dependency_roots = tuple(recon.get("dependency_roots", ()))
-    files, excluded = scope_inventory(target_root, exclusions, includes, dependency_roots)
+    excluded_roots = (managed_output_root,) if managed_output_root is not None else ()
+    files, excluded = scope_inventory(
+        target_root, exclusions, includes, dependency_roots, excluded_roots
+    )
     current = compilation_digests(
         target_root,
         files,
@@ -1056,6 +1085,7 @@ def validate_target_snapshot(manifest: dict[str, Any]) -> None:
         dependency_roots=dependency_roots,
         compilation_files=recon.get("compilation_files"),
         compiler_versions=recon.get("compiler_versions"),
+        excluded_roots=excluded_roots,
     )
     expected = {
         "source_digest": recon["source_digest"],
@@ -1095,16 +1125,17 @@ def validate_bound_code_index(
     index_path: Path,
     *,
     registry: dict[str, Any] | None = None,
+    managed_output_root: Path | None = None,
 ) -> dict[str, Any]:
     """Validate the exact code index bound to the current routing snapshot."""
     try:
         from render_runtime import validate_manifest
-    except ImportError:  # pragma: no cover - package-style import
+    except ImportError:  # pragma: no cover - supports package-style imports
         from scripts.render_runtime import validate_manifest
 
     registry = registry or load_json(root / "data/canonical-checks.json")
     validate_manifest(root, manifest, registry)
-    validate_target_snapshot(manifest)
+    validate_target_snapshot(manifest, managed_output_root=managed_output_root)
     binding = code_index_binding(manifest)
     if binding is None:
         raise ValueError("code-index is not bound to Recon")
@@ -1130,6 +1161,7 @@ def bound_code_index_status(
     index_path: Path,
     *,
     registry: dict[str, Any] | None = None,
+    managed_output_root: Path | None = None,
 ) -> dict[str, Any]:
     """Return a diagnostic status without making the optional index authoritative."""
     try:
@@ -1158,7 +1190,7 @@ def bound_code_index_status(
                 "status": "TAMPERED",
                 "message": "code-index navigation unavailable: body digest does not match authoritative Recon",
             }
-        validate_bound_code_index(root, manifest, index_path, registry=registry)
+        validate_bound_code_index(root, manifest, index_path, registry=registry, managed_output_root=managed_output_root)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
         return {
             "available": False,

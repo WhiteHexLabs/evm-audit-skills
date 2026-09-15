@@ -234,9 +234,10 @@ def synthesize(
     screen_results: dict[str, Any] | None = None,
     domain_context: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
+    managed_output_root: Path | None = None,
 ) -> ReportSynthesisResult:
     validate_manifest(root, manifest, registry)
-    validate_target_snapshot(manifest)
+    validate_target_snapshot(manifest, managed_output_root=managed_output_root)
     try:
         from validate_audit_run import validate_run
     except ImportError:  # pragma: no cover - package-style import
@@ -251,6 +252,7 @@ def synthesize(
         domain_context,
         context,
         ledger_paths,
+        managed_output_root=managed_output_root,
     )
     validate_schema(root, "audit-state.schema.json", state)
     validate_artifact_identity(state, manifest)
@@ -489,6 +491,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--issue-candidates-out", type=Path)
     parser.add_argument("--bundle-metadata-out", type=Path)
     parser.add_argument("--allow-incomplete", action="store_true", help="write an explicitly incomplete artifact")
+    parser.add_argument(
+        "--managed-output-root",
+        type=Path,
+        help="controller-owned audit output root; required when the run lives inside the audited project",
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
     args = parser.parse_args(argv)
     configure(quiet=args.quiet)
@@ -523,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
                     audit_root=Path(recon_context["target_root"]),
                     build_root=Path(recon_context["build_root"]),
                     label=label,
+                    managed_output_root=args.managed_output_root,
                 )
         state = load_json(args.audit_state) if args.audit_state else {}
         severity = severity_bytes = None
@@ -557,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
             screen_results=screen_results,
             domain_context=domain_context,
             context=context,
+            managed_output_root=args.managed_output_root,
         )
         current_state = synthesis.state
         if poc_evidence is not None:

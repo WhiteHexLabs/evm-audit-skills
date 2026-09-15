@@ -71,6 +71,8 @@ def validate_run(
     domain_context: dict[str, Any] | None,
     context: dict[str, Any] | None,
     ledger_paths: list[Path],
+    *,
+    managed_output_root: Path | None = None,
 ) -> dict[str, Any]:
     invalid: list[str] = []
     coverage_errors: list[str] = []
@@ -86,7 +88,7 @@ def validate_run(
     except (ValueError, KeyError) as error:
         invalid.append(str(error))
     try:
-        validate_target_snapshot(manifest)
+        validate_target_snapshot(manifest, managed_output_root=managed_output_root)
     except (ValueError, KeyError) as error:
         invalid.append(str(error))
 
@@ -166,7 +168,8 @@ def validate_run(
             review_errors.append(f"review snapshot is unavailable: {error}")
 
     records, ledger_errors = collect_review_records(
-        ledger_paths, manifest, registry, candidates, domain_resolution, review_snapshot
+        ledger_paths, manifest, registry, candidates, domain_resolution, review_snapshot,
+        managed_output_root=managed_output_root,
     )
     review_errors.extend(ledger_errors)
     reviewed = set(records)
@@ -245,6 +248,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registry", type=Path, default=ROOT / "data/canonical-checks.json")
     parser.add_argument("--ledger", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--managed-output-root",
+        type=Path,
+        help="controller-owned audit output root; required when the run lives inside the audited project",
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
     args = parser.parse_args(argv)
     configure(quiet=args.quiet)
@@ -268,12 +276,16 @@ def main(argv: list[str] | None = None) -> int:
                 audit_root=Path(recon_context["target_root"]),
                 build_root=Path(recon_context["build_root"]),
                 label="audit state",
+                managed_output_root=args.managed_output_root,
             )
         screen = load_json(args.screen_results) if args.screen_results.exists() else None
         domain = load_json(args.domain_resolution) if args.domain_resolution else None
         domain_context = load_json(args.domain_context)
         context = load_json(args.context)
-        state = validate_run(ROOT, manifest, registry, screen, domain, domain_context, context, args.ledger)
+        state = validate_run(
+            ROOT, manifest, registry, screen, domain, domain_context, context, args.ledger,
+            managed_output_root=args.managed_output_root,
+        )
         rendered = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
         if args.output:
             atomic_write_text(args.output, rendered)
@@ -306,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
                 set(coverage["deep_candidates"]),
                 domain,
                 state.get("review_snapshot_id"),
+                managed_output_root=args.managed_output_root,
             )
             reviewed_safe = sum(record.get("status") == "REVIEWED_SAFE" for record in records.values())
         except (OSError, ValueError, KeyError, json.JSONDecodeError):

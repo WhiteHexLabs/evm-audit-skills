@@ -429,9 +429,14 @@ def collect_review_records(
     expected_ids: set[str],
     domain_resolution: dict[str, Any] | None = None,
     review_snapshot_id: str | None = None,
+    *,
+    managed_output_root: Path | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """Validate and combine ledgers without allowing cross-ledger overwrites."""
-    values_by_path, errors = _validated_ledgers(paths, manifest, registry, expected_ids, domain_resolution, review_snapshot_id)
+    values_by_path, errors = _validated_ledgers(
+        paths, manifest, registry, expected_ids, domain_resolution, review_snapshot_id,
+        managed_output_root=managed_output_root,
+    )
     records: dict[str, dict[str, Any]] = {}
     for values in values_by_path:
         for record in values[1:]:
@@ -449,8 +454,10 @@ def _validated_ledgers(
     expected_ids: set[str],
     domain_resolution: dict[str, Any] | None = None,
     review_snapshot_id: str | None = None,
+    *,
+    managed_output_root: Path | None = None,
 ) -> tuple[list[list[dict[str, Any]]], list[str]]:
-    validate_target_snapshot(manifest)
+    validate_target_snapshot(manifest, managed_output_root=managed_output_root)
     values_by_path: list[list[dict[str, Any]]] = []
     errors: list[str] = []
     record_sources: dict[str, Path] = {}
@@ -486,9 +493,14 @@ def collect_review_history(
     expected_ids: set[str],
     domain_resolution: dict[str, Any] | None = None,
     review_snapshot_id: str | None = None,
+    *,
+    managed_output_root: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Return the validated event history for a Markdown audit view."""
-    values_by_path, errors = _validated_ledgers(paths, manifest, registry, expected_ids, domain_resolution, review_snapshot_id)
+    values_by_path, errors = _validated_ledgers(
+        paths, manifest, registry, expected_ids, domain_resolution, review_snapshot_id,
+        managed_output_root=managed_output_root,
+    )
     history = [
         record
         for values in values_by_path
@@ -515,6 +527,7 @@ def append(
     *,
     domain_context: dict[str, Any] | None = None,
     screen_results: dict[str, Any] | None = None,
+    managed_output_root: Path | None = None,
 ) -> None:
     if domain_context is None or screen_results is None:
         raise ValueError("append requires current domain_context and screen_results")
@@ -522,7 +535,7 @@ def append(
         ROOT, manifest, domain_resolution, domain_context, screen_results
     )
     with _writer_lock(path):
-        validate_target_snapshot(manifest)
+        validate_target_snapshot(manifest, managed_output_root=managed_output_root)
         if record.get("record_type") != "review":
             raise ValueError("append requires record_type=review")
         if record.get("schema_version") != SCHEMA_VERSION:
@@ -597,8 +610,10 @@ def pending(
     registry: dict[str, Any],
     domain_resolution: dict[str, Any] | None = None,
     review_snapshot_id: str | None = None,
+    *,
+    managed_output_root: Path | None = None,
 ) -> dict[str, list[str]]:
-    validate_target_snapshot(manifest)
+    validate_target_snapshot(manifest, managed_output_root=managed_output_root)
     validate_schema(ROOT, "screen-results.schema.json", screen)
     validate_artifact_identity(screen, manifest)
     selected = {entry["canonical_id"] for entry in selected_entries(manifest, domain_resolution=domain_resolution)}
@@ -680,6 +695,7 @@ def write_ledger(
     *,
     domain_context: dict[str, Any] | None = None,
     screen_results: dict[str, Any] | None = None,
+    managed_output_root: Path | None = None,
 ) -> None:
     if domain_context is None or screen_results is None:
         raise ValueError("write_ledger requires current domain_context and screen_results")
@@ -687,7 +703,7 @@ def write_ledger(
         ROOT, manifest, domain_resolution, domain_context, screen_results
     )
     with _writer_lock(path):
-        validate_target_snapshot(manifest)
+        validate_target_snapshot(manifest, managed_output_root=managed_output_root)
         if path.exists() or _commit_path(path).exists():
             raise ValueError(f"refusing to overwrite existing ledger: {path}")
         prepared: list[dict[str, Any]] = []
@@ -733,6 +749,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pending", action="store_true")
     parser.add_argument("--append-record", type=Path)
     parser.add_argument("--render-markdown", type=Path)
+    parser.add_argument(
+        "--managed-output-root",
+        type=Path,
+        help="controller-owned audit output root; required when the run lives inside the audited project",
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
     parser.add_argument("--verbose", action="store_true", help="include per-check review details")
     args = parser.parse_args(argv)
@@ -741,13 +762,17 @@ def main(argv: list[str] | None = None) -> int:
         stage("DEEP_REVIEW", detail="Tracking candidate progress")
         manifest, registry = read_json(args.manifest), read_json(args.registry)
         validate_manifest(ROOT, manifest, registry)
-        validate_target_snapshot(manifest)
+        validate_target_snapshot(manifest, managed_output_root=args.managed_output_root)
         recon_context = manifest["feature_map"]["recon_context"]
         audit_root = Path(recon_context["target_root"])
         build_root = Path(recon_context["build_root"])
         for ledger in args.ledger:
             validate_generated_artifact_path(
-                ledger, audit_root=audit_root, build_root=build_root, label="review ledger"
+                ledger,
+                audit_root=audit_root,
+                build_root=build_root,
+                label="review ledger",
+                managed_output_root=args.managed_output_root,
             )
         require_distinct_paths(
             ("manifest", args.manifest),
@@ -765,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
                 audit_root=audit_root,
                 build_root=build_root,
                 label="review Markdown",
+                managed_output_root=args.managed_output_root,
             )
         screen = read_json(args.screen_results)
         domain_resolution = read_json(args.domain_resolution) if args.domain_resolution else None
@@ -774,7 +800,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.pending:
             progress = pending(
-                manifest, screen, args.ledger, registry, domain_resolution, current_snapshot
+                manifest, screen, args.ledger, registry, domain_resolution, current_snapshot,
+                managed_output_root=args.managed_output_root,
             )
             print(json.dumps(progress, ensure_ascii=False, sort_keys=True))
             candidate_count = sum(item.get("result") == "CANDIDATE" for item in screen.get("results", []))
@@ -798,12 +825,14 @@ def main(argv: list[str] | None = None) -> int:
                 domain_resolution,
                 domain_context=domain_context,
                 screen_results=screen,
+                managed_output_root=args.managed_output_root,
             )
             success("Review ledger updated")
         records: dict[str, dict[str, Any]] = {}
         if args.render_markdown:
             values, errors = collect_review_history(
-                args.ledger, manifest, registry, candidates, domain_resolution, current_snapshot
+                args.ledger, manifest, registry, candidates, domain_resolution, current_snapshot,
+                managed_output_root=args.managed_output_root,
             )
             if errors:
                 raise ValueError("; ".join(errors))
@@ -811,11 +840,13 @@ def main(argv: list[str] | None = None) -> int:
             atomic_write_text(args.render_markdown, render_markdown(values, manifest, registry))
             success(f"Review view written to {args.render_markdown}")
             records, errors = collect_review_records(
-                args.ledger, manifest, registry, candidates, domain_resolution, current_snapshot
+                args.ledger, manifest, registry, candidates, domain_resolution, current_snapshot,
+                managed_output_root=args.managed_output_root,
             )
         elif args.append_record:
             records, errors = collect_review_records(
-                args.ledger, manifest, registry, candidates, domain_resolution, current_snapshot
+                args.ledger, manifest, registry, candidates, domain_resolution, current_snapshot,
+                managed_output_root=args.managed_output_root,
             )
             if errors:
                 raise ValueError("; ".join(errors))

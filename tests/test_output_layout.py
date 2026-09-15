@@ -14,7 +14,14 @@ from evm_audit_runtime.output_layout import (
     run_layout_metadata,
     validate_managed_output_root,
 )
-from scripts.scope_context import resolve_build_root
+from scripts.audit_artifacts import validate_target_snapshot
+from scripts.scope_context import (
+    compilation_digests,
+    conservative_input_snapshot,
+    resolve_build_root,
+    scope_inventory,
+)
+from helpers import synthetic_feature_map
 
 
 def _foundry_project(parent: Path) -> Path:
@@ -200,6 +207,93 @@ class ManagedOutputLayoutTests(unittest.TestCase):
                 run_layout_metadata(project, external)["location_mode"],
                 "EXTERNAL",
             )
+
+
+class ManagedOutputExclusionTests(unittest.TestCase):
+    """Generated artifacts under the managed root stay outside audit identity."""
+
+    def _project_with_poc(self, directory: Path, output: Path) -> Path:
+        project = _foundry_project(directory)
+        (output / "poc").mkdir(parents=True, exist_ok=True)
+        (output / "poc" / "Exploit.t.sol").write_text(
+            "contract ExploitTest {}\n", encoding="utf-8"
+        )
+        (output / "AUDIT-REPORT.md").write_text("# report\n", encoding="utf-8")
+        return project
+
+    def test_poc_sources_neither_included_nor_excluded_in_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            project = self._project_with_poc(parent, parent / "protocol" / DEFAULT_OUTPUT_DIR_NAME)
+            included, excluded = scope_inventory(
+                project,
+                excluded_roots=(project / DEFAULT_OUTPUT_DIR_NAME,),
+            )
+            self.assertEqual(included, ["src/Protocol.sol"])
+            self.assertEqual(excluded, [])
+            # Without the exact root the generated source would be inventoried.
+            unmanaged_included, _ = scope_inventory(project)
+            self.assertEqual(unmanaged_included, ["src/Protocol.sol"])
+
+    def test_custom_output_root_exclusion_is_path_based(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            output = parent / "protocol" / "security" / "audit-001"
+            project = self._project_with_poc(parent, output)
+            # An unrelated directory sharing the basename is not excluded.
+            (project / "src" / "audit-001").mkdir(parents=True, exist_ok=True)
+            (project / "src" / "audit-001" / "Real.sol").write_text(
+                "contract Real {}\n", encoding="utf-8"
+            )
+            included, _ = scope_inventory(project, excluded_roots=(output,))
+            self.assertEqual(included, ["src/Protocol.sol", "src/audit-001/Real.sol"])
+
+    def test_managed_output_never_changes_digests_or_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            output = parent / "protocol" / DEFAULT_OUTPUT_DIR_NAME
+            project = self._project_with_poc(parent, output)
+            files, _ = scope_inventory(project, excluded_roots=(output,))
+            snapshot_kwargs = {
+                "build_root": project,
+                "boundary": project,
+                "excluded_roots": (output,),
+            }
+            before = conservative_input_snapshot(project, **snapshot_kwargs)
+            digests_before = compilation_digests(
+                project, files, None, build_root=project, boundary=project, excluded_roots=(output,)
+            )
+            (output / "poc" / "Second.t.sol").write_text(
+                "contract Second {}\n", encoding="utf-8"
+            )
+            (output / "foundry.toml").write_text("[profile.default]\n", encoding="utf-8")
+            self.assertEqual(
+                conservative_input_snapshot(project, **snapshot_kwargs),
+                before,
+            )
+            self.assertEqual(
+                compilation_digests(
+                    project, files, None, build_root=project, boundary=project, excluded_roots=(output,)
+                ),
+                digests_before,
+            )
+
+    def test_validate_target_snapshot_ignores_only_the_managed_subtree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            project = _foundry_project(parent)
+            output = project / DEFAULT_OUTPUT_DIR_NAME
+            # Routing binds digests while the managed output root is empty.
+            manifest = {"feature_map": synthetic_feature_map(target=project)}
+            self._project_with_poc(parent, output)
+            validate_target_snapshot(manifest, managed_output_root=output)
+            (output / "poc" / "More.t.sol").write_text("contract More {}\n", encoding="utf-8")
+            validate_target_snapshot(manifest, managed_output_root=output)
+            (project / "src" / "Protocol.sol").write_text(
+                "contract Protocol { uint256 changed; }\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "changed after routing"):
+                validate_target_snapshot(manifest, managed_output_root=output)
 
 
 if __name__ == "__main__":

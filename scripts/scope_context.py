@@ -10,6 +10,7 @@ from typing import Iterable
 
 
 DEFAULT_EXCLUDED_PARTS = {
+    ".evm-auditor-work",
     ".git",
     ".venv",
     "artifacts",
@@ -81,6 +82,21 @@ def _matches(path: Path, patterns: Iterable[str]) -> bool:
     return any(path.match(pattern) for pattern in patterns)
 
 
+def relative_excluded_roots(root: Path, excluded_roots: Iterable[Path]) -> tuple[Path, ...]:
+    """Map exact excluded roots onto their relative prefixes inside root."""
+    resolved_root = root.resolve()
+    prefixes: list[Path] = []
+    for excluded in excluded_roots:
+        resolved = Path(excluded).resolve()
+        if resolved_root != resolved and resolved_root in resolved.parents:
+            prefixes.append(resolved.relative_to(resolved_root))
+    return tuple(prefixes)
+
+
+def excluded_by_root(relative: Path, prefixes: tuple[Path, ...]) -> bool:
+    return any(prefix == relative or prefix in relative.parents for prefix in prefixes)
+
+
 def _excluded(
     relative: str,
     patterns: Iterable[str],
@@ -101,10 +117,14 @@ def scope_inventory(
     exclusions: Iterable[str] = (),
     include_patterns: Iterable[str] = (),
     dependency_roots: Iterable[str] = DEFAULT_DEPENDENCY_ROOTS,
+    excluded_roots: Iterable[Path] = (),
 ) -> tuple[list[str], list[str]]:
     patterns = tuple(sorted({pattern.strip() for pattern in exclusions if pattern.strip()}))
     includes = tuple(sorted({pattern.strip() for pattern in include_patterns if pattern.strip()}))
     dependency_roots = tuple(sorted({root.strip() for root in dependency_roots if root.strip()}))
+    # Engine-managed output roots outrank user include/exclude policy: generated
+    # artifacts can never re-enter audit scope through an --include pattern.
+    managed_prefixes = relative_excluded_roots(root, excluded_roots)
     if root.is_file():
         if root.suffix != ".sol":
             raise ValueError(f"audit scope file must be Solidity: {root}")
@@ -116,7 +136,13 @@ def scope_inventory(
     included: list[str] = []
     excluded: list[str] = []
     for path in sorted(root.rglob("*.sol")):
-        relative = path.relative_to(root).as_posix()
+        relative_path = path.relative_to(root)
+        if excluded_by_root(relative_path, managed_prefixes):
+            # Managed-output descendants stay invisible to both buckets:
+            # recording them would let files published after Recon change the
+            # init-time inventory this snapshot is compared against.
+            continue
+        relative = relative_path.as_posix()
         (excluded if _excluded(relative, patterns, includes, dependency_roots) else included).append(relative)
     if not included:
         raise ValueError(f"audit scope contains no Solidity files: {root}")
@@ -146,11 +172,13 @@ def _digest_files(root: Path, files: Iterable[Path]) -> str:
     return digest.hexdigest()
 
 
-def _compilation_sources(root: Path) -> list[Path]:
+def _compilation_sources(root: Path, excluded_roots: Iterable[Path] = ()) -> list[Path]:
+    managed_prefixes = relative_excluded_roots(root, excluded_roots)
     return [
         path
         for path in sorted(root.rglob("*.sol"))
         if not any(part in NON_SOURCE_PARTS for part in path.relative_to(root).parts)
+        and not excluded_by_root(path.relative_to(root), managed_prefixes)
     ]
 
 
@@ -168,8 +196,9 @@ def _selected_compilation_sources(root: Path, compilation_files: Iterable[str]) 
     return selected
 
 
-def _build_configs(root: Path, dependency_roots: Iterable[str]) -> list[Path]:
+def _build_configs(root: Path, dependency_roots: Iterable[str], excluded_roots: Iterable[Path] = ()) -> list[Path]:
     roots = set(dependency_roots)
+    managed_prefixes = relative_excluded_roots(root, excluded_roots)
     return [
         path
         for path in sorted(root.rglob("*"))
@@ -177,6 +206,7 @@ def _build_configs(root: Path, dependency_roots: Iterable[str]) -> list[Path]:
         and (path.name in BUILD_CONFIG_NAMES or path.name == ".gitmodules" or path.name.startswith("hardhat.config."))
         and not any(part in NON_SOURCE_PARTS for part in path.relative_to(root).parts)
         and (not path.relative_to(root).parts or path.relative_to(root).parts[0] not in roots)
+        and not excluded_by_root(path.relative_to(root), managed_prefixes)
     ]
 
 
@@ -273,6 +303,7 @@ def compilation_digests(
     compilation_files: Iterable[str] | None = None,
     compiler_versions: Iterable[str] | None = None,
     boundary: Path | None = None,
+    excluded_roots: Iterable[Path] = (),
 ) -> dict[str, str]:
     """Fingerprint audit scope and the complete selected compilation context separately."""
     source_files = tuple(source_files)
@@ -286,14 +317,14 @@ def compilation_digests(
     compilation_sources = (
         _selected_compilation_sources(compilation_root, compilation_files)
         if compilation_files is not None
-        else _compilation_sources(compilation_root)
+        else _compilation_sources(compilation_root, excluded_roots)
     )
     audit_paths = {
         (audit_root if audit_root.is_file() else audit_root / relative).resolve()
         for relative in source_files
     }
     dependency_sources = [path for path in compilation_sources if path.resolve() not in audit_paths]
-    configs = _build_configs(compilation_root, dependency_roots)
+    configs = _build_configs(compilation_root, dependency_roots, excluded_roots)
     dependencies = [path for path in configs if path.name in DEPENDENCY_METADATA_NAMES] + dependency_sources
     dependency_files = _digest_files(compilation_root, sorted(set(dependencies)))
     dependency = hashlib.sha256((dependency_files + "\0" + _submodule_commits(compilation_root, dependency_roots)).encode("utf-8")).hexdigest()
@@ -333,6 +364,7 @@ def conservative_input_snapshot(
     include_patterns: Iterable[str] = (),
     dependency_roots: Iterable[str] = DEFAULT_DEPENDENCY_ROOTS,
     boundary: Path | None = None,
+    excluded_roots: Iterable[Path] = (),
 ) -> str:
     """Hash the conservative source/build state independently of the compiler."""
     audit_root = audit_root.resolve()
@@ -342,9 +374,10 @@ def conservative_input_snapshot(
         exclusions,
         include_patterns,
         dependency_roots,
+        excluded_roots,
     )
-    build_sources = _compilation_sources(build_root)
-    build_configs = _build_configs(build_root, dependency_roots)
+    build_sources = _compilation_sources(build_root, excluded_roots)
+    build_configs = _build_configs(build_root, dependency_roots, excluded_roots)
     digest = hashlib.sha256()
     _snapshot_update(digest, "snapshot-version", "1")
     _snapshot_update(digest, "audit-root", str(audit_root))

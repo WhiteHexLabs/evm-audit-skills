@@ -371,6 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--domain-context-out", type=Path, help="write an unresolved Domain Context template")
     parser.add_argument("--owner-domain", help="render only checks owned by this Domain")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--managed-output-root",
+        type=Path,
+        help="controller-owned audit output root; required when the run lives inside the audited project",
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
     parser.add_argument("--verbose", action="store_true", help="include per-domain render details")
     args = parser.parse_args(argv)
@@ -378,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         manifest, registry = load_json(args.manifest), load_json(args.registry)
         validate_manifest(ROOT, manifest, registry)
-        validate_target_snapshot(manifest)
+        validate_target_snapshot(manifest, managed_output_root=args.managed_output_root)
         recon_context = manifest["feature_map"]["recon_context"]
         audit_root = Path(recon_context["target_root"])
         build_root = Path(recon_context["build_root"])
@@ -399,7 +404,11 @@ def main(argv: list[str] | None = None) -> int:
         for label, output in outputs:
             if output is not None:
                 validate_generated_artifact_path(
-                    output, audit_root=audit_root, build_root=build_root, label=label
+                    output,
+                    audit_root=audit_root,
+                    build_root=build_root,
+                    label=label,
+                    managed_output_root=args.managed_output_root,
                 )
         domain_resolution = load_json(args.domain_resolution) if args.domain_resolution else None
         unresolved_domains: set[str] = set()

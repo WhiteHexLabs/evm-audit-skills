@@ -251,6 +251,7 @@ def _render_screen(root: Path, values: dict[str, Path], *extra: str, verbose: bo
             "--manifest", str(values["manifest"]),
             "--profile", "screen",
             "--output", str(values["screen"]),
+            "--managed-output-root", str(values["manifest"].parent.parent),
             *extra,
         ],
         verbose=verbose,
@@ -727,6 +728,10 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         if args.solc:
             recon_args.extend(["--solc", args.solc])
         recon_args.extend(["--code-index-out", str(values["code_index"])])
+        # During initialization the staging directory is the effective output
+        # root; the final managed root is still empty, so exclusion semantics
+        # are identical for scope discovery and digests.
+        recon_args.extend(["--managed-output-root", str(staging)])
         if args.audit_root:
             recon_args.extend(["--audit-root", str(audit_root)])
         if args.build_root or prepared.trust["sanitized"]:
@@ -757,6 +762,7 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             "--manifest-out", str(values["manifest"]),
             "--context-out", str(values["context"]),
             "--environment-out", str(values["environment"]),
+            "--managed-output-root", str(staging),
         ]
         for exclusion in args.exclude:
             selector_args.extend(["--exclude", exclusion])
@@ -840,7 +846,10 @@ def _optional_code_index_status(
     manifest: dict[str, Any],
     registry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return bound_code_index_status(root, manifest, values["code_index"], registry=registry)
+    run_dir = values["manifest"].parent.parent if "manifest" in values else None
+    return bound_code_index_status(
+        root, manifest, values["code_index"], registry=registry, managed_output_root=run_dir
+    )
 
 
 def _report_generation_paths(base: Path) -> dict[str, Path]:
@@ -1210,6 +1219,7 @@ def _report_bundle_status(
                 screen_results=screen,
                 domain_context=domain_context,
                 context=context,
+                managed_output_root=run_dir,
             )
             if synthesis.state != state:
                 raise ValueError("report generation state differs from current audit state")
@@ -1450,7 +1460,7 @@ def _load_run(root: Path, run_dir: Path) -> tuple[dict[str, Any], dict[str, Any]
     validate_run_dir_isolation(run_dir, audit_root=audit_root, build_root=build_root)
     registry = load_json(root / "data/canonical-checks.json")
     validate_manifest(root, manifest, registry)
-    validate_target_snapshot(manifest)
+    validate_target_snapshot(manifest, managed_output_root=run_dir)
     values["code_index_status"] = _optional_code_index_status(root, values, manifest, registry)
     if values["code_index_status"]["status"] not in {"ABSENT", "CURRENT"}:
         warning(values["code_index_status"]["message"])
@@ -1519,7 +1529,12 @@ def _render_owner_view(
     _run(
         root,
         "render_runtime.py",
-        ["--manifest", str(values["manifest"]), "--profile", profile, *extra],
+        [
+            "--manifest", str(values["manifest"]),
+            "--profile", profile,
+            "--managed-output-root", str(values["manifest"].parent.parent),
+            *extra,
+        ],
         verbose=verbose,
     )
     if not _runtime_view_current(output, expected):
@@ -1921,6 +1936,7 @@ def status_run(
         domain_context,
         context,
         _ledger_paths(run_dir),
+        managed_output_root=run_dir,
     )
     atomic_write_json(values["audit_state"], state)
     if emit:
@@ -2074,7 +2090,8 @@ def next_step(root: Path, run_dir: Path, *, verbose: bool = False, emit: bool = 
             deep_views.add(output.resolve())
         _prune_runtime_views(run_dir, "deep", deep_views)
         records, errors = collect_review_records(
-            _ledger_paths(run_dir), manifest, registry, candidates, resolution, review_snapshot
+            _ledger_paths(run_dir), manifest, registry, candidates, resolution, review_snapshot,
+            managed_output_root=run_dir,
         )
         if errors:
             raise ValueError("; ".join(errors))
@@ -2266,6 +2283,7 @@ def prepare_report_publication(
         screen_results=screen,
         domain_context=domain_context,
         context=context,
+        managed_output_root=run_dir,
     )
     current_state = synthesis.state
     if poc_evidence is not None:
