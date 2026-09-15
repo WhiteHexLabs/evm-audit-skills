@@ -30,7 +30,8 @@ merge publishes artifacts but never advances it):
 ```text
 controller: init → next until Domain Resolution terminal → DOMAIN_CONTEXT
 wave A:     per-Domain workers write context shards            (parallel)
-barrier A:  domain_shards.py merge-context → authoritative
+barrier A:  domain_shards.py status → require context_merge_ready
+            domain_shards.py merge-context → authoritative
             reviews/domain-context.json (no snapshot yet)
             controller next → assert stage SCREEN + worker agent
 wave B:     per-Domain workers write screen shards             (parallel)
@@ -70,6 +71,12 @@ then the controller operation. Deep/Proof dispatch is driven by the current
 one-worker-per-Domain fan-out, and every dispatch first checks that the
 returned stage and `recommended_execution.agent` match the shipped stage
 contract, failing closed instead of dispatching a fallback agent.
+Barrier A runs `domain_shards.py status` after the Domain Context workers
+quiesce and merges only when `context_merge_ready` is true (the readiness
+check publishes nothing by itself); readiness failures fail closed with at
+most one targeted remediation pass for the missing/invalid/unresolved owner
+Domains — never blanket JSON repair, and never manufacturing `NOT_APPLICABLE`
+to force a merge.
 Parallelism is across Domains within a stage; stage ordering stays
 deterministic. Dispatch mechanics (ZCode custom worker agent types, Codex
 sequential fallback) are specified in the Master Skill's Orchestration
@@ -272,7 +279,26 @@ evidence for the relevant exclusion dimension; uncertainty remains `CANDIDATE`.
 For required Domain Context, `NOT_APPLICABLE` is also trusted absence: it needs
 `scope_complete: true` and evidence allowed by the owning Domain's
 `trusted_absence_policy`. A manual explanation alone is never enough; use
-`UNKNOWN` until non-applicability is proven.
+`UNKNOWN` until non-applicability is proven. Keep the three notions separate:
+
+```text
+Shard validity:    UNKNOWN may be valid.
+Merge readiness:   UNKNOWN is not ready.
+Trusted absence:   NOT_APPLICABLE must pass the effective Domain policy.
+```
+
+The JSON evidence schema permits a broad set of evidence kinds; a Domain's
+`trusted_absence_policy` is narrower and controls what can prove absence —
+`source`, for example, is schema-valid evidence but is not trusted absence
+under any shipped Domain policy. `write-context-shard` therefore validates
+every `NOT_APPLICABLE` entry against the owning Domain's snapshot-bound
+policy before the shard is stored, using the same shared validator as the
+merged artifact, so a policy-invalid entry is rejected at write time without
+replacing an existing valid shard; `status` and `merge-context` re-validate
+the same contract as a second line of defense. `UNKNOWN` entries are always
+writable as truthful intermediate data and block merge readiness until the
+owner Domain resolves them — never coerce `UNKNOWN` into `NOT_APPLICABLE` to
+force a merge.
 
 Each candidate canonical ID receives one owner-Domain JSONL event stream. Its
 checkpoint and every event bind the deterministic `review_snapshot_id`, derived
@@ -339,10 +365,15 @@ python3 scripts/domain_shards.py merge --run-dir <run-dir>
 
 Shards live at `reviews/shards/{screen,context}-<owner-domain>.json`, are
 schema-validated against `schemas/{screen-shard,domain-context-shard}.schema.json`,
-and bind to the routing snapshot. `status` validates every present shard and
-the authoritative domain context, and reports stage-aware readiness
-(`context_merge_ready`, `screen_merge_ready`, `merge_ready`) with a
-`global_domain_context` diagnostic; context readiness additionally re-runs
+and bind to the routing snapshot. A context shard's `NOT_APPLICABLE` entries
+are additionally validated against the owning Domain's
+`trusted_absence_policy` (snapshot-bound in the routing manifest) at write
+time, so policy-invalid trusted absence is rejected by
+`write-context-shard` before the shard is stored and a rejected replacement
+never overwrites an existing valid shard. `status` validates every present
+shard and the authoritative domain context, and reports stage-aware
+readiness (`context_merge_ready`, `screen_merge_ready`, `merge_ready`) with
+a `global_domain_context` diagnostic; context readiness additionally re-runs
 the exact merge-context assembly on the shards, so a present-but-invalid
 shard, a shard whose required context remains UNKNOWN (surfaced per entry as
 `unresolved_required` and in the `context_merge_diagnostic`), or a
