@@ -517,6 +517,34 @@ def durable_replace_directory(source: Path, destination: Path) -> bool:
     return fsync_parent_directory(destination)
 
 
+def fsync_directory_tree(root: Path) -> bool:
+    """Fsync every file, then every directory, of a freshly copied tree."""
+    if os.name == "nt":
+        return False
+    unsupported = {errno.EINVAL, errno.ENOTSUP, getattr(errno, "EOPNOTSUPP", errno.ENOTSUP)}
+    durable = True
+
+    def _fsync(path: Path) -> None:
+        nonlocal durable
+        try:
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as error:
+            if error.errno not in unsupported:
+                raise
+            durable = False
+
+    # Bottom-up so a directory is fsynced after its children are durable.
+    for directory, _, files in os.walk(root, topdown=False):
+        for name in files:
+            _fsync(Path(directory) / name)
+        _fsync(Path(directory))
+    return durable
+
+
 def invalidate_final_outputs(*paths: Path) -> None:
     for path in paths:
         try:

@@ -63,6 +63,7 @@ try:
         canonical_sha256,
         derive_review_snapshot_id,
         durable_replace_directory,
+        fsync_directory_tree,
         json_text,
         load_json,
         load_json_bytes,
@@ -96,6 +97,7 @@ except ImportError:  # pragma: no cover
         canonical_sha256,
         derive_review_snapshot_id,
         durable_replace_directory,
+        fsync_directory_tree,
         json_text,
         load_json,
         load_json_bytes,
@@ -697,21 +699,26 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         if not run_dir.is_dir() or any(run_dir.iterdir()):
             raise ValueError(f"refusing to initialize non-empty run directory: {run_dir}")
     sanitized_source: Path | None = None
-    prepared = prepare_repository(
-        original_target,
-        original_audit_root,
-        original_build_root,
-        source_trust=getattr(args, "source_trust", "UNKNOWN"),
-        acquisition_root=acquisition_root,
-        snapshot_destination=run_dir.parent / f".{run_dir.name}.sanitized-source",
-    )
-    target, audit_root, build_root = prepared.target, prepared.audit_root, prepared.build_root
-    if prepared.trust["sanitized"]:
-        sanitized_source = build_root
-    run_dir.parent.mkdir(parents=True, exist_ok=True)
-    staging: Path | None = Path(tempfile.mkdtemp(prefix=f".{run_dir.name}.init-", dir=run_dir.parent))
+    staging: Path | None = None
+    publication: Path | None = None
+    # Initialization never constructs run state inside the authoritative
+    # trees: staging and sanitized sources live in the system temp area until
+    # the complete, validated bundle is published next to its destination.
+    external = Path(tempfile.mkdtemp(prefix="evm-audit-init-"))
     try:
-        assert staging is not None
+        prepared = prepare_repository(
+            original_target,
+            original_audit_root,
+            original_build_root,
+            source_trust=getattr(args, "source_trust", "UNKNOWN"),
+            acquisition_root=acquisition_root,
+            snapshot_destination=external / "sanitized-source",
+        )
+        target, audit_root, build_root = prepared.target, prepared.audit_root, prepared.build_root
+        if prepared.trust["sanitized"]:
+            sanitized_source = build_root
+        staging = external / "staging"
+        staging.mkdir()
         _init_model_profile(args, staging)
         values = paths(staging)
         trust_artifact = {
@@ -798,7 +805,15 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             if not run_dir.is_dir() or any(run_dir.iterdir()):
                 raise ValueError(f"run directory changed during initialization: {run_dir}")
             run_dir.rmdir()
-        staged_run.replace(run_dir)
+        # Publish the validated bundle through a short-lived sibling so the
+        # destination only ever appears via one atomic rename.
+        run_dir.parent.mkdir(parents=True, exist_ok=True)
+        publication = Path(tempfile.mkdtemp(prefix=f".{run_dir.name}.publish-", dir=run_dir.parent))
+        copy_tree(staged_run, publication / "run")
+        fsync_directory_tree(publication / "run")
+        durable_replace_directory(publication / "run", run_dir)
+        shutil.rmtree(publication)
+        publication = None
         staging = None
         next_result = _relocate_paths(next_result, staged_run, run_dir)
         info(f"Next required phase: {_display_stage(next_result['stage'])}")
@@ -834,10 +849,10 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             "recommended_execution": next_result["recommended_execution"],
         }
     finally:
-        if staging is not None and staging.exists():
-            shutil.rmtree(staging)
-        if sanitized_source is not None and staging is not None and sanitized_source.exists():
-            shutil.rmtree(sanitized_source, ignore_errors=True)
+        for temporary in (staging, publication, sanitized_source):
+            if temporary is not None and temporary.exists():
+                shutil.rmtree(temporary, ignore_errors=True)
+        shutil.rmtree(external, ignore_errors=True)
 
 
 def _optional_code_index_status(

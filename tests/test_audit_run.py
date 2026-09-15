@@ -807,6 +807,39 @@ class AuditRunTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(keep.read_text(encoding="utf-8"), "user content")
 
+    def test_sanitized_init_leaves_no_temporary_trees_in_authoritative_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            project = parent / "repo"
+            (project).mkdir()
+            (project / "Target.sol").write_text("contract Target {}\n", encoding="utf-8")
+            (project / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+            run_dir = parent / "run"
+            result = self.run_cli(
+                "scripts/audit_run.py",
+                "init",
+                str(project / "Target.sol"),
+                "--run-dir",
+                str(run_dir),
+                "--audit-root",
+                str(project / "Target.sol"),
+                "--domain",
+                "evm-audit-general",
+                "--source-trust",
+                "UNKNOWN",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((run_dir / "routing/manifest.json").is_file())
+            leftovers = [
+                str(path)
+                for path in list(project.rglob("*.sanitized-source"))
+                + list(parent.glob("*.sanitized-source"))
+                + list(project.rglob("*.init-*"))
+                + list(parent.glob("*.publish-*"))
+                + list(project.rglob("evm-audit-init-*"))
+            ]
+            self.assertEqual(leftovers, [])
+
     def test_e2e_clean_audit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory) / "run"
