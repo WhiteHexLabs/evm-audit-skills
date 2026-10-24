@@ -239,7 +239,7 @@ Execution modes:
   the current stage, with the agent type named by the stage profile
   (`recommended_execution.agent`). Dispatch is a bounded slot queue: hold at
   most `recommended_execution.max_concurrent_workers` worker agents in
-  flight at once (the shipped contract is `8`), keep the remaining Domains
+  flight at once (the shipped contract is `6`), keep the remaining Domains
   as a FIFO dispatch queue in sorted-Domain order, and each time a
   completion notification frees a slot, immediately dispatch the next queued
   worker. Every Domain in the wave is dispatched exactly once; the wave ends
