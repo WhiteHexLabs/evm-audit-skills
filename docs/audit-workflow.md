@@ -47,7 +47,7 @@ the Final Report stay with the main agent; each of Domain Context, Initial
 Review, Deep Audit, and Vulnerability Validation runs as its own stage wave,
 with one worker per Domain dispatched to the agent type configured for that
 stage, as a bounded slot queue: at most
-`recommended_execution.max_concurrent_workers` (5) workers in flight, the
+`recommended_execution.max_concurrent_workers` (8) workers in flight, the
 remaining Domains queued in sorted order, and every freed slot backfilled
 immediately. Two controller-owned merge barriers sit between context and screen
 work and between screen and deep review, because every deep record must bind

@@ -82,7 +82,7 @@ Parallelism is across Domains within a stage; stage ordering stays
 deterministic. Dispatch mechanics (ZCode custom worker agent types, Codex
 sequential fallback) are specified in the Master Skill's Orchestration
 section: on ZCode, a wave dispatches as a bounded slot queue — at most
-`recommended_execution.max_concurrent_workers` (5) worker agents in flight
+`recommended_execution.max_concurrent_workers` (8) worker agents in flight
 at once, remaining Domains queued in sorted order, and each freed slot
 backfilled immediately from the queue — so scheduling changes, coverage
 never does. `domain_shards.py status` validates every present shard with the
