@@ -140,6 +140,7 @@ banner from the returned stage fields.
   Reasoning: <reasoning_effort>     (codex)
   Thought level: <thought_level>    (zcode)
   Worker agent: <agent>             (zcode fan-out stages only)
+  Dispatch slots: <max_concurrent_workers>   (zcode fan-out stages only)
 ```
 
 Use only controller-provided phase and counts; never infer them from stderr.
@@ -236,7 +237,13 @@ Execution modes:
   installation is `install.sh`'s job, and a new session is required for the
   definitions to register. Dispatch one worker per Domain that has work in
   the current stage, with the agent type named by the stage profile
-  (`recommended_execution.agent`), as parallel background agents; act on
+  (`recommended_execution.agent`). Dispatch is a bounded slot queue: hold at
+  most `recommended_execution.max_concurrent_workers` worker agents in
+  flight at once (the shipped contract is `5`), keep the remaining Domains
+  as a FIFO dispatch queue in sorted-Domain order, and each time a
+  completion notification frees a slot, immediately dispatch the next queued
+  worker. Every Domain in the wave is dispatched exactly once; the wave ends
+  only when the queue is drained and all workers are quiescent. Act on
   completion notifications, do not poll.
 - **Codex or runtimes without sub-agent dispatch** (sequential): the main
   agent executes the same stage-aligned workflow inline, stage by stage,
@@ -341,7 +348,11 @@ pins one model/thought-level contract):
 8. **Controller tail.** Complete the reporting inputs, then run `report`.
 
 Parallelism is across Domains within a stage; stage ordering stays
-deterministic. Worker hard rules (enforced by the agent templates and
+deterministic. Worker dispatch is concurrency-bounded — at most
+`max_concurrent_workers` workers in flight per wave, with queued Domains
+backfilling freed slots immediately — which affects scheduling only, never
+stage ordering or check coverage. Worker hard rules (enforced by the agent
+templates and
 re-validated by the CLI): workers write only the one artifact their stage
 allows (their context shard, their screen shard, or their own ledger), never
 edit global run files, never rerun Recon/Routing/Selector, never turn
@@ -354,7 +365,8 @@ Domain resolutions, complete required context, classify Initial Review cards,
 write Deep Audit/Vulnerability Validation records, and assign structured
 severity plus reporting details after confirmation. Per-Domain work follows
 the Orchestration section: parallel dispatch only where the active runtime
-actually supports it; otherwise sequential execution of the same workflow.
+actually supports it, always within the stage's `max_concurrent_workers`
+slot bound; otherwise sequential execution of the same workflow.
 
 The model must not treat pattern matches as findings, turn `UNKNOWN` into
 absence, rerun routing in a Domain Skill, assign severity to `SUSPICIOUS`, or

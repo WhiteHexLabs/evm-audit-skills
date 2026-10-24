@@ -46,7 +46,10 @@ Domain per stage: Project Analysis, Domain Resolution, the stage merges, and
 the Final Report stay with the main agent; each of Domain Context, Initial
 Review, Deep Audit, and Vulnerability Validation runs as its own stage wave,
 with one worker per Domain dispatched to the agent type configured for that
-stage. Two controller-owned merge barriers sit between context and screen
+stage, as a bounded slot queue: at most
+`recommended_execution.max_concurrent_workers` (5) workers in flight, the
+remaining Domains queued in sorted order, and every freed slot backfilled
+immediately. Two controller-owned merge barriers sit between context and screen
 work and between screen and deep review, because every deep record must bind
 to the single review snapshot derived from the complete global results. The
 controller's `next` call is the transition barrier between waves: it alone

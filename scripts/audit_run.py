@@ -279,9 +279,18 @@ def _effective_model_profile(run_dir: Path) -> dict[str, Any]:
     return load_profile(profile_path) if profile_path.exists() else default_profile()
 
 
-def recommended_execution(run_dir: Path, stage_name: str) -> dict[str, str]:
+# Upper bound on simultaneously in-flight per-Domain worker agents during a
+# wave. The controller dispatches the wave as a bounded slot queue (a freed
+# slot is backfilled immediately); scheduling only, never coverage.
+MAX_CONCURRENT_WORKERS = 5
+
+
+def recommended_execution(run_dir: Path, stage_name: str) -> dict[str, Any]:
     profile = _effective_model_profile(run_dir)
-    return {"provider": profile["provider"], **stage_model(profile, stage_name)}
+    execution: dict[str, Any] = {"provider": profile["provider"], **stage_model(profile, stage_name)}
+    if execution.get("agent") is not None:
+        execution["max_concurrent_workers"] = MAX_CONCURRENT_WORKERS
+    return execution
 
 
 def _log_model_guidance(run_dir: Path | None, stage_name: str) -> None:
@@ -296,6 +305,7 @@ def _log_model_guidance(run_dir: Path | None, stage_name: str) -> None:
         info(f"Thought level: {execution['thought_level']}")
     if execution.get("agent") is not None:
         info(f"Worker agent: {execution['agent']}")
+        info(f"Dispatch slots: at most {execution['max_concurrent_workers']} concurrent workers")
     if execution["provider"] == "codex":
         info("Handoff: controller does not switch the active Codex model")
     else:

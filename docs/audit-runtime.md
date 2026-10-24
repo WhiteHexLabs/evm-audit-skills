@@ -81,7 +81,11 @@ to force a merge.
 Parallelism is across Domains within a stage; stage ordering stays
 deterministic. Dispatch mechanics (ZCode custom worker agent types, Codex
 sequential fallback) are specified in the Master Skill's Orchestration
-section; `domain_shards.py status` validates every present shard with the
+section: on ZCode, a wave dispatches as a bounded slot queue — at most
+`recommended_execution.max_concurrent_workers` (5) worker agents in flight
+at once, remaining Domains queued in sorted order, and each freed slot
+backfilled immediately from the queue — so scheduling changes, coverage
+never does. `domain_shards.py status` validates every present shard with the
 same contract as merge, and the authoritative domain context with the same
 contract as ``merge-screen``, reporting `context_merge_ready` /
 `screen_merge_ready` / `merge_ready`, so a present-but-invalid shard (or a
@@ -197,7 +201,9 @@ already uses. Profiles with older schema versions are rejected; see the
 
 `next` and `status` expose `recommended_execution` for the next phase, and
 stderr gives the same compact model handoff (thought level and worker agent
-name on zcode fan-out stages). The controller does not switch the active
+name on zcode fan-out stages). On dispatchable worker stages the entry also
+carries `max_concurrent_workers`, the in-flight slot bound for the wave's
+bounded dispatch queue. The controller does not switch the active
 model or thought level of the session it runs in; zcode controller-stage
 entries are handoff recommendations for the main session, while worker
 stages run on their configured custom agent types. An absent profile on an

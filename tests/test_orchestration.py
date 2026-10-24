@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from helpers import ROOT, build_manifest, load_json, suite_inputs
-from scripts.audit_run import main as audit_run_main
+from scripts.audit_run import MAX_CONCURRENT_WORKERS, main as audit_run_main
 from scripts.codex_model_profile import default_profile, write_profile
 from scripts.domain_shards import (
     merge_context,
@@ -81,6 +81,20 @@ class OrchestrationLifecycleTests(unittest.TestCase):
             agent,
             f"{stage} handoff must name the shipped worker contract",
         )
+        # Dispatchable worker stages carry the bounded-queue slot contract;
+        # controller stages never fan out and must not suggest a bound.
+        if agent is not None:
+            self.assertEqual(
+                execution.get("max_concurrent_workers"),
+                MAX_CONCURRENT_WORKERS,
+                f"{stage} dispatch must be bounded to the shipped slot count",
+            )
+        else:
+            self.assertNotIn(
+                "max_concurrent_workers",
+                execution,
+                "controller stages must not carry a worker dispatch bound",
+            )
 
     def view_names(self, run_dir: Path, profile: str) -> list[str]:
         runtime = run_dir / "runtime"
@@ -480,6 +494,22 @@ class ShippedOrchestrationContractTests(unittest.TestCase):
         merge_command = text.index("domain_shards.py merge-context --run-dir")
         self.assertLess(status_command, merge_command)
         self.assertIn("context_merge_ready == true", text)
+
+    def test_master_skill_pins_bounded_worker_dispatch_queue(self) -> None:
+        """The dispatch contract: a bounded slot queue with immediate backfill.
+
+        The slot bound is machine-readable in every worker-stage
+        ``recommended_execution`` (pinned by ``assert_stage``); the Master
+        Skill must teach the same queue semantics, never an unbounded fan-out.
+        """
+        text = (ROOT / "skills/evm-audit-master/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("max_concurrent_workers", text)
+        self.assertIn("bounded slot queue", text)
+        # A freed slot is backfilled immediately; the wave drains fully.
+        self.assertIn("immediately dispatch the next queued", text)
+        self.assertIn("queue is drained and all workers are quiescent", text)
+        # The bound changes scheduling only, never coverage or ordering.
+        self.assertIn("never\nstage ordering or check coverage", text)
 
 
 if __name__ == "__main__":
