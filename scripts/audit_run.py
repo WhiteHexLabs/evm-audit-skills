@@ -282,7 +282,7 @@ def _effective_model_profile(run_dir: Path) -> dict[str, Any]:
 # Upper bound on simultaneously in-flight per-Domain worker agents during a
 # wave. The controller dispatches the wave as a bounded slot queue (a freed
 # slot is backfilled immediately); scheduling only, never coverage.
-MAX_CONCURRENT_WORKERS = 6
+MAX_CONCURRENT_WORKERS = 4
 
 
 def recommended_execution(run_dir: Path, stage_name: str) -> dict[str, Any]:
