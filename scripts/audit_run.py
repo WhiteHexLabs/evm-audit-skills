@@ -64,6 +64,7 @@ try:
         atomic_write_bytes,
         atomic_write_json,
         atomic_write_text,
+        bind_routing_snapshot,
         bound_code_index_status,
         canonical_sha256,
         derive_review_snapshot_id,
@@ -98,6 +99,7 @@ except ImportError:  # pragma: no cover
         atomic_write_bytes,
         atomic_write_json,
         atomic_write_text,
+        bind_routing_snapshot,
         bound_code_index_status,
         canonical_sha256,
         derive_review_snapshot_id,
@@ -218,6 +220,7 @@ def paths(run_dir: Path) -> dict[str, Any]:
         "poc_verification": run_dir / "reviews/poc-verification.json",
         "model_profile": run_dir / "config/codex-model-profile.json",
         "repository_trust": run_dir / "config/repository-trust.json",
+        "compilation_plan": run_dir / "config/compilation-plan.json",
         "run_layout": run_dir / "config/run-layout.json",
     }
 
@@ -361,6 +364,10 @@ def _recon_progress_summary(feature_map: dict[str, Any]) -> str:
     files_analyzed = recon.get("files_analyzed", [])
     file_count = len(files_analyzed) if isinstance(files_analyzed, list) else 0
     compilation = "COMPLETE" if recon.get("compilation_complete") else "INCOMPLETE"
+    if isinstance(recon.get("compilation_plan"), dict):
+        targets = recon.get("compilation_targets", [])
+        pending = sum(item.get("status") != "COMPLETE" for item in targets if isinstance(item, dict))
+        return f"{file_count} Solidity files analyzed; {len(targets)} compilation targets; {pending} incomplete; compilation {compilation}"
     return f"{file_count} Solidity files analyzed; compilation {compilation}"
 
 
@@ -432,6 +439,18 @@ def _log_recon(feature_map: dict[str, Any], target: Path, strict: bool, *, run_d
     complete = recon["compilation_complete"]
     info(f"Audit scope: {target}")
     info(f"Compilation: {'COMPLETE' if complete else 'INCOMPLETE'}")
+    plan = recon.get("compilation_plan")
+    if isinstance(plan, dict):
+        targets = recon.get("compilation_targets", [])
+        failed = [item for item in targets if item.get("status") != "COMPLETE"]
+        info(f"Compilation targets: {len(targets)}; complete: {len(targets) - len(failed)}; pending: {len(failed)}")
+        if recon.get("uncompiled_paths"):
+            warning(f"Uncompiled audit-scope files: {len(recon['uncompiled_paths'])}")
+        unassigned = recon.get("recon_quality", {}).get("unassigned_paths", [])
+        if unassigned:
+            warning(f"Unassigned audit-scope files: {len(unassigned)}")
+        if recon.get("navigation_artifacts", {}).get("code_index") is None:
+            info("Code-index navigation unavailable for multi-target Recon; inspect source directly")
     _log_model_guidance(run_dir, "RECON")
     if complete:
         success(f"{_stage_label('RECON')} complete")
@@ -760,6 +779,12 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         atomic_write_json(values["repository_trust"], trust_artifact)
         values["feature_map"].parent.mkdir(parents=True, exist_ok=True)
         values["manifest"].parent.mkdir(parents=True, exist_ok=True)
+        if getattr(args, "compilation_plan", None) is not None:
+            try:
+                plan_value = load_json(args.compilation_plan.resolve())
+            except (OSError, ValueError, KeyError, json.JSONDecodeError) as error:
+                raise ValueError(f"cannot read compilation plan {args.compilation_plan}: {error}") from error
+            atomic_write_json(values["compilation_plan"], plan_value)
         recon_args = [str(target), "--root", str(root), "--output", str(values["feature_map"])]
         recon_args.extend(["--source-trust", getattr(args, "source_trust", "UNKNOWN")])
         if args.solc:
@@ -769,6 +794,8 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         # root; the final managed root is still empty, so exclusion semantics
         # are identical for scope discovery and digests.
         recon_args.extend(["--managed-output-root", str(staging)])
+        if getattr(args, "compilation_plan", None) is not None:
+            recon_args.extend(["--compilation-plan", str(values["compilation_plan"])])
         if args.audit_root:
             recon_args.extend(["--audit-root", str(audit_root)])
         if args.build_root or prepared.trust["sanitized"]:
@@ -827,6 +854,21 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             warning("Routing failed")
             raise
         _log_routing(manifest, run_dir=staging)
+        if prepared.trust["sanitized"]:
+            # Durable artifacts must refer back to the authoritative original
+            # source tree after the temporary sanitized snapshot is removed.
+            feature_map = _relocate_paths(load_json(values["feature_map"]), build_root, original_build_root)
+            atomic_write_json(values["feature_map"], feature_map)
+            manifest = load_json(values["manifest"])
+            manifest["feature_map"] = feature_map
+            manifest = bind_routing_snapshot(manifest)
+            atomic_write_json(values["manifest"], manifest)
+            context = load_json(values["context"])
+            context["routing_snapshot_id"] = manifest["routing_snapshot_id"]
+            atomic_write_json(values["context"], context)
+            environment = load_json(values["environment"])
+            environment["routing_snapshot_id"] = manifest["routing_snapshot_id"]
+            atomic_write_json(values["environment"], environment)
         next_result = next_step(root, staging, verbose=args.verbose, emit=False)
         _load_run(root, staging)
         run_layout = run_layout_metadata(original_build_root, run_dir)
@@ -879,6 +921,7 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             "report_path": str(values["report"]),
             "manifest": str(values["manifest"]),
             "code_index": str(values["code_index"]),
+            **({"compilation_plan": str(values["compilation_plan"])} if values["compilation_plan"].exists() else {}),
             "progress_history": progress_history,
             "next": next_result,
             "recommended_execution": next_result["recommended_execution"],
@@ -3181,6 +3224,11 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument("--source-trust", type=str.upper, choices=("TRUSTED", "UNTRUSTED", "UNKNOWN"), default="UNKNOWN")
     init.add_argument("--root", type=Path, default=ROOT)
     init.add_argument("--solc")
+    init.add_argument(
+        "--compilation-plan",
+        type=Path,
+        help="validated JSON plan for sequential multi-target/profile Recon",
+    )
     init.add_argument("--present-only", action="store_true")
     init.add_argument("--exclude", action="append", default=[])
     init.add_argument("--include", action="append", default=[])

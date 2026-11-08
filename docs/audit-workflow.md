@@ -99,6 +99,12 @@ Recon is conservative when traversal or compilation is incomplete. Presence
 evidence can still identify code that was seen, but missing evidence is not
 treated as proof that a feature or dependency is absent.
 
+For incompatible compiler or Foundry profiles, pass a validated
+`--compilation-plan <path>` to `audit_run.py init`. It runs the declared
+targets serially and aggregates them into one Feature Map. Failed targets and
+uncovered scope files stay visible and keep the audit in conservative degraded
+mode.
+
 Main outputs are:
 
 - a Feature Map;

@@ -12,10 +12,13 @@ import argparse
 import importlib.metadata
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -58,11 +61,20 @@ except ImportError:  # pragma: no cover - supports importing from another cwd
     from scripts.code_context import build_code_index
 
 try:
-    from runtime_log import configure, error, info, stage, success
+    from runtime_log import configure, error, info, stage, success, warning
 except ImportError:  # pragma: no cover - supports importing from another cwd
-    from scripts.runtime_log import configure, error, info, stage, success
+    from scripts.runtime_log import configure, error, info, stage, success, warning
 
 from evm_audit_runtime.versions import FEATURE_MAP_VERSION
+from evm_audit_runtime.compilation import (
+    CompilationPlanError,
+    bind_compilation_digest,
+    compilation_plan_digest,
+    coverage_summary,
+    normalize_compilation_plan,
+    public_plan,
+    target_results_digest,
+)
 from evm_audit_runtime.repository_trust import inspect_repository
 
 
@@ -388,7 +400,7 @@ def validate_output_targets(
             )
 
 
-def build_feature_map(
+def _build_feature_map_single(
     root: Path,
     target: Path,
     solc: str | None,
@@ -586,6 +598,334 @@ def build_feature_map(
     return payload
 
 
+@contextmanager
+def _foundry_profile_environment(profile: str | None):
+    """Apply only the supported Foundry profile selector for one invocation."""
+    if profile is None:
+        yield
+        return
+    previous = os.environ.get("FOUNDRY_PROFILE")
+    os.environ["FOUNDRY_PROFILE"] = profile
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("FOUNDRY_PROFILE", None)
+        else:
+            os.environ["FOUNDRY_PROFILE"] = previous
+
+
+def _foundry_configuration(build_root: Path, profile: str | None) -> tuple[bool, str | None, str]:
+    if profile is None:
+        return True, None, "project-build-config"
+    config_path = build_root / "foundry.toml"
+    try:
+        with config_path.open("rb") as handle:
+            config = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise CompilationPlanError(f"cannot read Foundry configuration {config_path}: {error}") from error
+    profiles = config.get("profile", {})
+    if not isinstance(profiles, dict):
+        raise CompilationPlanError(f"Foundry configuration has invalid profile table: {config_path}")
+    if profile != "default" and profile not in profiles:
+        raise CompilationPlanError(f"Foundry profile is not defined: {profile}")
+    selected = profiles.get(profile, {})
+    if not isinstance(selected, dict):
+        raise CompilationPlanError(f"Foundry profile has invalid settings: {profile}")
+    return (
+        True,
+        sha256_bytes(json.dumps(selected, sort_keys=True, separators=(",", ":")).encode("utf-8")),
+        f"{config_path.name}#profile.{profile}",
+    )
+
+
+def _compiler_version_matches(actual: list[str], expected: list[str]) -> bool:
+    if not expected:
+        return bool(actual)
+    def normalize(value: str) -> str:
+        match = re.match(r"\d+\.\d+\.\d+", value)
+        return match.group(0) if match else value.strip()
+    return bool(actual) and {normalize(item) for item in actual} == {normalize(item) for item in expected}
+
+
+def _is_integrity_error(error: Exception) -> bool:
+    text = str(error)
+    return any(
+        marker in text
+        for marker in (
+            "compiled source is outside build_root",
+            "compilation file is outside build root",
+            "escapes its declared root",
+            "inside the managed audit output",
+        )
+    )
+
+
+def _build_feature_map_multi(
+    root: Path,
+    target: Path,
+    solc: str | None,
+    confirm_absence: bool,
+    audit_root: Path | None,
+    exclusions: tuple[str, ...],
+    build_root: Path | None,
+    source_trust: str | None,
+    include_patterns: tuple[str, ...],
+    dependency_roots: tuple[str, ...],
+    code_index_out: Path | None,
+    feature_map_out: Path | None,
+    acquisition_root: Path | None,
+    managed_output_root: Path | None,
+    compilation_plan: Path | dict[str, Any],
+) -> dict[str, Any]:
+    """Run the supported analyzer once per declared target and aggregate evidence."""
+    scope_root = resolve_scope_root(target, audit_root)
+    compilation_root = resolve_build_root(scope_root, build_root, boundary=acquisition_root or scope_root)
+    trust = inspect_repository(acquisition_root or compilation_root, source_trust)
+    if not trust["direct_agent_open_allowed"]:
+        raise ValueError(
+            "repository trust gate blocked the original source; create a sanitized snapshot "
+            "with scripts/repository_preflight.py before Recon"
+        )
+    if solc is not None:
+        raise CompilationPlanError("--solc cannot be combined with --compilation-plan; select versions in project build configuration")
+    if isinstance(compilation_plan, Path):
+        try:
+            raw_plan = json.loads(compilation_plan.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise CompilationPlanError(f"cannot read compilation plan {compilation_plan}: {error}") from error
+    else:
+        raw_plan = compilation_plan
+    validate_schema(root, "compilation-plan.schema.json", raw_plan)
+    plan = normalize_compilation_plan(
+        raw_plan,
+        audit_root=scope_root,
+        build_root=compilation_root,
+        managed_output_root=managed_output_root,
+    )
+    plan_public = public_plan(plan)
+    plan_hash = compilation_plan_digest(plan)
+    scope_files, excluded_paths = scope_inventory(
+        scope_root, exclusions, include_patterns, dependency_roots,
+        (managed_output_root,) if managed_output_root is not None else (),
+    )
+    excluded_roots = (managed_output_root,) if managed_output_root is not None else ()
+    pre_snapshot = conservative_input_snapshot(
+        scope_root,
+        build_root=compilation_root,
+        exclusions=exclusions,
+        include_patterns=include_patterns,
+        dependency_roots=dependency_roots,
+        boundary=acquisition_root or scope_root,
+        excluded_roots=excluded_roots,
+    )
+    scope_set = set(scope_files)
+    assigned = {item for unit in plan["units"] for item in unit["scope_files"]}
+    if assigned - scope_set:
+        raise CompilationPlanError(
+            "compilation plan assigns files outside the audit scope: "
+            + ", ".join(sorted(assigned - scope_set))
+        )
+    validate_output_targets(
+        scope_root,
+        compilation_root,
+        scope_files,
+        (("feature-map", feature_map_out), ("code-index", code_index_out)),
+    )
+    for label, output in (("feature-map", feature_map_out), ("code-index", code_index_out)):
+        if output is not None:
+            validate_generated_artifact_path(
+                output,
+                audit_root=scope_root,
+                build_root=compilation_root,
+                label=label,
+                managed_output_root=managed_output_root,
+            )
+    Slither = ensure_slither_import()
+    feature_data = json.loads((root / "data" / "features.json").read_text(encoding="utf-8"))
+    detector_config = load_detector_config(root, set(feature_data["features"]))
+    audit_files = set(scope_files)
+    evidence: dict[str, set[tuple[str, str, str, str]]] = {feature: set() for feature in detector_config}
+    results: list[dict[str, Any]] = []
+    closures: list[str] = []
+    compiler_versions: set[str] = set()
+    for unit in plan["units"]:
+        unit_result: dict[str, Any] = {
+            "id": unit["id"],
+            "target": unit["target"],
+            "scope_files": unit["scope_files"],
+            "expected_compiler_versions": unit.get("expected_compiler_versions", []),
+            "analyzed_files": [],
+            "missing_files": unit["scope_files"],
+            "compiler_versions": [],
+            "configuration_verified": False,
+            "configuration_source": None,
+            "compilation_provenance": "CONSERVATIVE_BUILD_ROOT_FALLBACK",
+            "status": "FAILED",
+        }
+        if unit.get("foundry_profile") is not None:
+            unit_result["foundry_profile"] = unit["foundry_profile"]
+        slither = None
+        try:
+            config_verified, config_digest, config_source = _foundry_configuration(compilation_root, unit.get("foundry_profile"))
+            unit_result["configuration_verified"] = config_verified
+            unit_result["configuration_source"] = config_source
+            if config_digest is not None:
+                unit_result["configuration_digest"] = config_digest
+            unit_target = (compilation_root / unit["target"]).resolve()
+            with _foundry_profile_environment(unit.get("foundry_profile")):
+                kwargs: dict[str, Any] = {}
+                slither = Slither(str(unit_target), **kwargs)
+            closure = compilation_unit_paths(
+                slither, compilation_root, excluded_roots,
+            )
+            analyzed = analyzed_source_paths(slither, scope_root, audit_files)
+            actual = actual_compiler_versions(slither)
+            unit_result["analyzed_files"] = analyzed
+            unit_result["missing_files"] = sorted(set(unit["scope_files"]) - set(analyzed))
+            unit_result["compiler_versions"] = actual
+            unit_result["compilation_provenance"] = "EXACT_COMPILATION_CLOSURE" if closure is not None else "CONSERVATIVE_BUILD_ROOT_FALLBACK"
+            if closure is not None:
+                unit_result["compilation_files"] = closure
+                closures.extend(closure)
+            compiler_versions.update(actual)
+            if not _compiler_version_matches(actual, unit.get("expected_compiler_versions", [])):
+                unit_result["diagnostic"] = f"observed compiler versions {actual} do not match expected {unit.get('expected_compiler_versions', [])}"
+            elif not unit_result["missing_files"] and unit_result["configuration_verified"]:
+                unit_result["status"] = "COMPLETE"
+            else:
+                unit_result["status"] = "INCOMPLETE"
+        except Exception as error:
+            if _is_integrity_error(error):
+                raise
+            unit_result["diagnostic"] = str(error)
+        if slither is not None:
+            detected = detect(slither, detector_config, scope_root, audit_files)
+            for feature, values in detected.items():
+                evidence.setdefault(feature, set()).update(values)
+        results.append(unit_result)
+
+    coverage = coverage_summary(scope_set, [
+        {**unit, "scope_files": unit["scope_files"]} for unit in results
+    ])
+    complete = coverage["complete"] and not (scope_set - assigned)
+    plan_results_hash = target_results_digest(results)
+    base_digests = compilation_digests(
+        scope_root,
+        scope_files,
+        None,
+        build_root=compilation_root,
+        dependency_roots=dependency_roots,
+        compilation_files=sorted(set(closures)) if closures and all(item.get("compilation_files") is not None for item in results if item.get("status") == "COMPLETE") else None,
+        compiler_versions=sorted(compiler_versions),
+        boundary=acquisition_root or scope_root,
+        excluded_roots=excluded_roots,
+    )
+    base_digests["compilation_input_digest"] = bind_compilation_digest(
+        base_digests["compilation_input_digest"], plan_hash, plan_results_hash
+    )
+    features: dict[str, Any] = {}
+    for feature in sorted(detector_config):
+        values = sorted(evidence.get(feature, set()))
+        if values:
+            features[feature] = {
+                "status": "PRESENT",
+                "evidence": [
+                    {"kind": kind, "location": location, "reason": reason, "scope_origin": scope_origin}
+                    for kind, location, reason, scope_origin in values
+                ],
+            }
+        elif confirm_absence and complete and detector_config[feature].get("absence_capable") is True:
+            features[feature] = {
+                "status": "ABSENT_CONFIRMED",
+                "evidence": [{"kind": "slither-ast", "location": str(scope_root), "reason": f"Complete multi-target Slither traversal found no {detector_config[feature]['label']}", "scope_origin": "AUDIT_SCOPE"}],
+            }
+        else:
+            features[feature] = {"status": "UNKNOWN", "evidence": []}
+    recon_context: dict[str, Any] = {
+        "target_root": str(scope_root),
+        "build_root": str(compilation_root),
+        "files_analyzed": coverage["analyzed_paths"],
+        "excluded_paths": excluded_paths,
+        "exclusion_patterns": sorted(set(exclusions)),
+        "include_patterns": sorted(set(include_patterns)),
+        "dependency_roots": sorted(set(dependency_roots)),
+        "uncompiled_paths": coverage["uncompiled_paths"],
+        "source_digest": base_digests["audit_source_digest"],
+        **base_digests,
+        "compilation_complete": complete,
+        "recon_quality": {
+            "compilation_complete": complete,
+            "absence_filtering_complete": complete,
+            "mode": "COMPLETE" if complete else "CONSERVATIVE_DEGRADED",
+            "uncompiled_paths": coverage["uncompiled_paths"],
+            "compilation_provenance": "EXACT_COMPILATION_CLOSURE" if all(item.get("compilation_provenance") == "EXACT_COMPILATION_CLOSURE" for item in results) else "CONSERVATIVE_BUILD_ROOT_FALLBACK",
+            "unassigned_paths": coverage["unassigned_paths"],
+            "failed_units": sorted(item["id"] for item in results if item["status"] != "COMPLETE"),
+        },
+        "slither_version": importlib.metadata.version("slither-analyzer"),
+        "solc_version": next(iter(compiler_versions)) if len(compiler_versions) == 1 else None,
+        "compilation_plan": plan_public,
+        "compilation_plan_digest": plan_hash,
+        "compilation_targets": results,
+        "compilation_targets_digest": plan_results_hash,
+        "navigation_artifacts": {"code_index": None},
+    }
+    if compiler_versions:
+        recon_context["compiler_versions"] = sorted(compiler_versions)
+    if closures and all(item.get("status") == "COMPLETE" and item.get("compilation_files") for item in results):
+        recon_context["compilation_files"] = sorted(set(closures))
+    if code_index_out is not None:
+        # A profile-qualified merged index needs a separate identity contract;
+        # source inspection remains authoritative until that contract exists.
+        info("Multi-target Recon: code-index navigation unavailable; use source inspection")
+    payload = {"schema_version": FEATURE_MAP_VERSION, "recon_context": recon_context, "features": features}
+    if conservative_input_snapshot(
+        scope_root,
+        build_root=compilation_root,
+        exclusions=exclusions,
+        include_patterns=include_patterns,
+        dependency_roots=dependency_roots,
+        boundary=acquisition_root or scope_root,
+        excluded_roots=excluded_roots,
+    ) != pre_snapshot:
+        raise ValueError("source/build inputs changed during Recon; retry from a stable checkout")
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    if feature_map_out is not None:
+        atomic_write_text(feature_map_out, rendered)
+    return payload
+
+
+def build_feature_map(
+    root: Path,
+    target: Path,
+    solc: str | None,
+    confirm_absence: bool,
+    audit_root: Path | None = None,
+    exclusions: tuple[str, ...] = (),
+    build_root: Path | None = None,
+    source_trust: str | None = None,
+    include_patterns: tuple[str, ...] = (),
+    dependency_roots: tuple[str, ...] = tuple(sorted(DEFAULT_DEPENDENCY_ROOTS)),
+    code_index_out: Path | None = None,
+    feature_map_out: Path | None = None,
+    acquisition_root: Path | None = None,
+    managed_output_root: Path | None = None,
+    compilation_plan: Path | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if compilation_plan is not None:
+        return _build_feature_map_multi(
+            root, target, solc, confirm_absence, audit_root, exclusions, build_root,
+            source_trust, include_patterns, dependency_roots, code_index_out,
+            feature_map_out, acquisition_root, managed_output_root, compilation_plan,
+        )
+    return _build_feature_map_single(
+        root, target, solc, confirm_absence, audit_root, exclusions, build_root,
+        source_trust, include_patterns, dependency_roots, code_index_out,
+        feature_map_out, acquisition_root, managed_output_root,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("target", type=Path, help="Solidity file or project accepted by Slither")
@@ -599,6 +939,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--include", action="append", default=[], help="include a normally dependency-only audit path; repeatable")
     parser.add_argument("--dependency-root", action="append", default=None, help="top-level dependency root; repeatable")
     parser.add_argument("--present-only", action="store_true", help="leave detector absences UNKNOWN")
+    parser.add_argument(
+        "--compilation-plan",
+        type=Path,
+        help="validated JSON plan for sequential multi-target/profile Recon",
+    )
     parser.add_argument(
         "--managed-output-root",
         type=Path,
@@ -631,6 +976,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             acquisition_root=args.acquisition_root,
             managed_output_root=args.managed_output_root,
+            compilation_plan=args.compilation_plan,
         )
         rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         if not args.output:
@@ -641,6 +987,15 @@ def main(argv: list[str] | None = None) -> int:
         info(f"PRESENT features: {statuses.count('PRESENT')}")
         info(f"ABSENT_CONFIRMED features: {statuses.count('ABSENT_CONFIRMED')}")
         info(f"UNKNOWN features: {statuses.count('UNKNOWN')}")
+        recon = payload["recon_context"]
+        if recon.get("compilation_plan") is not None:
+            targets = recon.get("compilation_targets", [])
+            failed = [item["id"] for item in targets if item.get("status") != "COMPLETE"]
+            info(f"Compilation targets: {len(targets)}; complete: {len(targets) - len(failed)}; failed/incomplete: {len(failed)}")
+            if recon.get("uncompiled_paths"):
+                warning(f"Uncompiled audit-scope files: {len(recon['uncompiled_paths'])}")
+            if recon.get("recon_quality", {}).get("unassigned_paths"):
+                warning(f"Unassigned audit-scope files: {len(recon['recon_quality']['unassigned_paths'])}")
         if args.output:
             info(f"Feature Map written to {args.output}")
         success("Feature Map ready")

@@ -43,6 +43,7 @@ PLATFORM_TESTS = frozenset(
 )
 
 FAST_MODULES = (
+    "test_compilation_plan",
     "test_generation",
     "test_install_sh",
     "test_knowledge",
@@ -113,6 +114,7 @@ CONTROLLER_LIFECYCLE_MODULES = (
 
 SLITHER_MODULES = (
     "test_code_context",
+    "test_compilation_plan",
     "test_compilation_lineage",
     "test_packaging",
     "test_recon",

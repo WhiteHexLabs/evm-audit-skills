@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Route canonical checks once from a scope-bound Feature Map v4."""
+"""Route canonical checks once from a scope-bound Feature Map v5."""
 
 from __future__ import annotations
 
@@ -14,6 +14,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from evm_audit_runtime.controller_state import progress_metadata
+from evm_audit_runtime.compilation import (
+    bind_compilation_digest,
+    compilation_plan_digest,
+    normalize_compilation_plan,
+    target_results_digest,
+    validate_target_results,
+)
 from evm_audit_runtime.versions import ENVIRONMENT_CONTEXT_VERSION, FEATURE_MAP_VERSION, FEATURE_REGISTRY_VERSION, ROUTING_MANIFEST_VERSION
 
 try:
@@ -124,7 +131,7 @@ def audit_context(
         execution_environment=execution_environment, compiler_version=compiler_version,
         evm_fork=evm_fork, protocol_version=protocol_version, trusted_facts=trusted_facts,
     )
-    return {
+    result = {
         "selector_version": SELECTOR_VERSION,
         "registry_sha256": registry_sha256(registry),
         "knowledge_commit": knowledge_commit,
@@ -140,6 +147,10 @@ def audit_context(
         "fork_block_semantics": "reproducibility metadata only; does not derive evm_fork",
         "audit_timestamp": audit_timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+    for key in ("compilation_plan_digest", "compilation_targets_digest"):
+        if key in recon_context:
+            result[key] = recon_context[key]
+    return result
 
 
 def validate_environment_context(
@@ -265,13 +276,17 @@ def validate_recon_context(
     managed_output_root: Path | None = None,
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        raise SelectionInputError("Feature Map v4 requires recon_context")
+        raise SelectionInputError("Feature Map v5 requires recon_context")
     required = {
         "target_root", "build_root", "files_analyzed", "excluded_paths", "exclusion_patterns", "include_patterns", "dependency_roots", "uncompiled_paths", "source_digest",
         "audit_source_digest", "dependency_digest", "build_config_digest", "compilation_input_digest",
         "compilation_complete", "recon_quality", "slither_version", "solc_version",
     }
-    optional = {"compilation_files", "compiler_versions", "navigation_artifacts"}
+    optional = {
+        "compilation_files", "compiler_versions", "navigation_artifacts",
+        "compilation_plan", "compilation_plan_digest", "compilation_targets",
+        "compilation_targets_digest",
+    }
     if set(raw) - required - optional or not required <= set(raw):
         raise SelectionInputError(f"recon_context fields must include {sorted(required)}")
     analyzed = set(_string_list(raw["files_analyzed"], "recon_context.files_analyzed"))
@@ -299,7 +314,8 @@ def validate_recon_context(
         raise SelectionInputError("recon_context.compilation_complete must be boolean")
     quality = raw["recon_quality"]
     if not isinstance(quality, dict) or set(quality) - {
-        "compilation_complete", "absence_filtering_complete", "mode", "uncompiled_paths", "compilation_provenance"
+        "compilation_complete", "absence_filtering_complete", "mode", "uncompiled_paths", "compilation_provenance",
+        "unassigned_paths", "failed_units",
     } or not {"compilation_complete", "absence_filtering_complete", "mode", "uncompiled_paths"} <= set(quality):
         raise SelectionInputError("recon_context.recon_quality has an invalid shape")
     provenance = quality.get("compilation_provenance", "CONSERVATIVE_BUILD_ROOT_FALLBACK")
@@ -352,12 +368,52 @@ def validate_recon_context(
         ):
             raise SelectionInputError("recon_context.navigation_artifacts.code_index has an invalid shape")
     if target_root is None:
-        raise SelectionInputError("Feature Map v4 selection requires --target-root")
+        raise SelectionInputError("Feature Map v5 selection requires --target-root")
     resolved = resolve_scope_root(target_root)
     resolved_build_root = resolve_build_root(resolved, build_root, boundary=acquisition_root or resolved)
+    plan = None
+    plan_digest = None
+    results_digest = None
+    if "compilation_plan" in raw:
+        try:
+            plan = normalize_compilation_plan(
+                raw["compilation_plan"],
+                audit_root=resolved,
+                build_root=resolved_build_root,
+                managed_output_root=managed_output_root,
+            )
+        except ValueError as error:
+            raise SelectionInputError(str(error)) from error
+        plan_digest = compilation_plan_digest(plan)
+        if raw.get("compilation_plan_digest") != plan_digest:
+            raise SelectionInputError("recon_context.compilation_plan_digest does not match the normalized plan")
+        target_values = raw.get("compilation_targets")
+        if not isinstance(target_values, list) or not target_values:
+            raise SelectionInputError("recon_context.compilation_targets is required with a compilation plan")
     excluded_roots = (managed_output_root,) if managed_output_root is not None else ()
     files, excluded = scope_inventory(resolved, exclusions, include_values, dependency_values, excluded_roots)
     scope_files = set(files)
+    if plan is not None:
+        try:
+            validate_target_results(plan, target_values, files)
+        except ValueError as error:
+            raise SelectionInputError(str(error)) from error
+        expected_unassigned = sorted(
+            set(files) - {item for unit in plan["units"] for item in unit["scope_files"]}
+        )
+        expected_failed = sorted(
+            result["id"] for result in target_values if result.get("status") != "COMPLETE"
+        )
+        if quality.get("unassigned_paths", []) != expected_unassigned:
+            raise SelectionInputError("recon_quality.unassigned_paths does not match the compilation plan")
+        if quality.get("failed_units", []) != expected_failed:
+            raise SelectionInputError("recon_quality.failed_units does not match compilation target results")
+        expected_complete = not expected_unassigned and not uncompiled and not expected_failed
+        if raw["compilation_complete"] is not expected_complete:
+            raise SelectionInputError("compilation_complete does not match compilation target results")
+        results_digest = target_results_digest(target_values)
+        if raw.get("compilation_targets_digest") != results_digest:
+            raise SelectionInputError("recon_context.compilation_targets_digest does not match target results")
     actual_digest = source_digest(resolved, files)
     if actual_digest != raw["source_digest"]:
         raise SelectionInputError("Recon source_digest does not match the current audit scope")
@@ -372,6 +428,10 @@ def validate_recon_context(
         boundary=acquisition_root or resolved,
         excluded_roots=excluded_roots,
     )
+    if plan is not None:
+        actual_digests["compilation_input_digest"] = bind_compilation_digest(
+            actual_digests["compilation_input_digest"], plan_digest or "", results_digest or ""
+        )
     for key, value in actual_digests.items():
         if raw[key] != value:
             raise SelectionInputError(f"Recon {key} does not match the current audit scope")
@@ -865,7 +925,7 @@ def environment_artifact(context: dict[str, Any], snapshot_id: str) -> dict[str,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--feature-map", type=Path, required=True, help="scope-bound Feature Map v4")
+    parser.add_argument("--feature-map", type=Path, required=True, help="scope-bound Feature Map v5")
     parser.add_argument("--target-root", type=Path, required=True, help="current audit scope used to verify recon source_digest")
     parser.add_argument("--build-root", type=Path, help="compilation/build project root; must match Recon")
     parser.add_argument("--acquisition-root", type=Path, help="stop automatic build-root discovery above this source boundary")

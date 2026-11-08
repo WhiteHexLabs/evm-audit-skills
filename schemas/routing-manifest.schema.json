@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:evm-audit-skills:routing-manifest:v7",
+  "$id": "urn:evm-audit-skills:routing-manifest:v8",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -13,7 +13,7 @@
   "properties": {
     "artifact_type": {"const": "routing-manifest"},
     "immutable": {"const": true},
-    "schema_version": {"const": 7},
+    "schema_version": {"const": 8},
     "stage": {"const": "ENVIRONMENT_DOMAIN_CHECK_ROUTING"},
     "routing_snapshot_id": {"$ref": "#/$defs/hash"},
     "audit_context": {"$ref": "#/$defs/audit_context"},
@@ -76,6 +76,8 @@
         "dependency_digest": {"$ref": "#/$defs/hash"},
         "build_config_digest": {"$ref": "#/$defs/hash"},
         "compilation_input_digest": {"$ref": "#/$defs/hash"},
+        "compilation_plan_digest": {"$ref": "#/$defs/hash"},
+        "compilation_targets_digest": {"$ref": "#/$defs/hash"},
         "chain_id": {"type": ["integer", "null"]},
         "chain_family": {"type": ["string", "null"]},
         "execution_environment": {"type": ["string", "null"]},

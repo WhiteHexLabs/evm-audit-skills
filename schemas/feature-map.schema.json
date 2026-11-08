@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:evm-audit-skills:feature-map:v4",
+  "$id": "urn:evm-audit-skills:feature-map:v5",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "recon_context", "features"],
   "properties": {
-    "schema_version": {"const": 4},
+    "schema_version": {"const": 5},
     "recon_context": {
       "type": "object",
       "additionalProperties": false,
@@ -35,12 +35,47 @@
             "absence_filtering_complete": {"type": "boolean"},
             "mode": {"enum": ["COMPLETE", "CONSERVATIVE_DEGRADED"]},
             "uncompiled_paths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-            "compilation_provenance": {"enum": ["EXACT_COMPILATION_CLOSURE", "CONSERVATIVE_BUILD_ROOT_FALLBACK"]}
+            "compilation_provenance": {"enum": ["EXACT_COMPILATION_CLOSURE", "CONSERVATIVE_BUILD_ROOT_FALLBACK"]},
+            "unassigned_paths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+            "failed_units": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
           }
         },
         "slither_version": {"type": "string", "minLength": 1},
         "solc_version": {"type": ["string", "null"]},
         "compiler_versions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "compilation_plan": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema_version", "units"],
+          "properties": {
+            "schema_version": {"const": 1},
+            "units": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "target", "scope_roots"],
+                "properties": {
+                  "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+                  "target": {"type": "string", "minLength": 1},
+                  "scope_roots": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+                  "foundry_profile": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"},
+                  "expected_compiler_versions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+                }
+              }
+            }
+          }
+        },
+        "compilation_plan_digest": {"$ref": "#/$defs/hash"},
+        "compilation_targets_digest": {"$ref": "#/$defs/hash"},
+        "compilation_files": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "compilation_targets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/compilation_target"}
+        },
         "navigation_artifacts": {
           "type": "object",
           "additionalProperties": false,
@@ -84,6 +119,28 @@
         "location": {"type": "string", "minLength": 1},
         "reason": {"type": "string", "minLength": 1},
         "scope_origin": {"enum": ["AUDIT_SCOPE", "DEPENDENCY", "FIRST_PARTY_DEPENDENCY", "EXTERNAL_DEPENDENCY", "UNKNOWN"]}
+      }
+    },
+    "compilation_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "target", "status", "scope_files", "analyzed_files", "missing_files", "compiler_versions", "expected_compiler_versions", "configuration_verified", "configuration_source", "compilation_provenance"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1},
+        "foundry_profile": {"type": "string", "minLength": 1},
+        "status": {"enum": ["COMPLETE", "INCOMPLETE", "FAILED"]},
+        "scope_files": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "analyzed_files": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "missing_files": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "compiler_versions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "expected_compiler_versions": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "configuration_verified": {"type": "boolean"},
+        "configuration_source": {"type": ["string", "null"], "minLength": 1},
+        "configuration_digest": {"$ref": "#/$defs/hash"},
+        "compilation_provenance": {"enum": ["EXACT_COMPILATION_CLOSURE", "CONSERVATIVE_BUILD_ROOT_FALLBACK"]},
+        "compilation_files": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "diagnostic": {"type": "string", "minLength": 1}
       }
     }
   }

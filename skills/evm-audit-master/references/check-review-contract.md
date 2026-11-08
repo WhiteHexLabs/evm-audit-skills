@@ -35,7 +35,7 @@ One terminal status
 
 Use a four-stage funnel for every routed canonical check:
 
-1. **`FAST_FILTER`** — verify the scope-bound Feature Map v4, evaluate
+1. **`FAST_FILTER`** — verify the scope-bound Feature Map v5, evaluate
    environment applicability, gate Domains by their surface predicate, then
    compare each candidate check with the feature map. Only a `curated` predicate
    proven `FALSE` is feature-filtered. A `FALSE` result from an `inferred`
@@ -50,7 +50,7 @@ Use a four-stage funnel for every routed canonical check:
    runnable PoC, transaction trace, or deterministic invariant violation before
    using `CONFIRMED`.
 
-The immutable routing-v7 manifest must account for every canonical ID in the considered
+The immutable routing-v8 manifest must account for every canonical ID in the considered
 Domain scope as `SELECTED`, `FILTERED_ENVIRONMENT`, or `FILTERED_FEATURE` and
 must separately account for Selected, Deferred, and filtered Domains. Deferred
 Domains must resolve before clean completion. It

@@ -139,7 +139,7 @@ class RuntimeTests(unittest.TestCase):
             ("evm-audit-general", "evm-audit-precision-math"),
             all_features=True,
         )
-        self.assertEqual(manifest["schema_version"], 7)
+        self.assertEqual(manifest["schema_version"], 8)
         self.assertTrue(manifest["immutable"])
         self.assertIn("target_repo_commit", manifest["audit_context"])
         shared = next(

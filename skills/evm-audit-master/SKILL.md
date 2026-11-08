@@ -11,7 +11,7 @@ Load this Skill first. Resolve `<suite-root>` as the nearest ancestor containing
 ## Invariants
 
 - `<suite-root>/data/canonical-checks.json` is the only checklist knowledge source. Generated Markdown is a view; do not load the full registry into model context.
-- Run Project Analysis (`RECON`, `ROUTING`) once. Preserve `routing_snapshot_id`, `registry_sha256`, `source_digest`, and `compilation_input_digest` across every artifact.
+- Run Project Analysis (`RECON`, `ROUTING`) once. Preserve `routing_snapshot_id`, `registry_sha256`, `source_digest`, and `compilation_input_digest` across every artifact. When a compilation plan is used, also preserve its normalized plan and target-result digests.
 - Project Analysis may emit `recon/code-index.json` as a navigation hint; inspect it first, load only targeted source ranges, and expand callers/callees whenever reachability is uncertain. Source remains authoritative.
 - Query only through the run-bound command (`code_context.py --run-dir <run-dir>`); use `--depth 2 --max-nodes 25 --max-edges 200` when a second hop is needed. Treat node/edge truncation and unresolved edges as reasons to verify more source, never as proof of safety.
 - `UNKNOWN` is never absence. Only trusted absence or confirmed environment mismatch may filter; Initial Review (`SCREEN`) may emit only `NOT_APPLICABLE_CONFIRMED` or `CANDIDATE`.
@@ -20,6 +20,7 @@ Load this Skill first. Resolve `<suite-root>` as the nearest ancestor containing
 - `CONFIRMED` requires strong proof of reachability, satisfiable preconditions, exploitability, and impact. A runnable PoC is a separate reporting requirement: only confirmed `High` and `Critical` findings require one; confirmed `Info`, `Low`, and `Medium` findings remain reportable without it.
 - Solidity POC source is user-owned evidence: archive audit-created or modified tests, helpers, and mocks under `<run-dir>/poc/` before proof, record the durable path in `proof` or `evidence.location`, and never delete or overwrite them after `PROOF` or report generation. Do not add new PoC files to the audited target after routing.
 - Default the audit output to `<original-build-root>/.evm-auditor-work`. Pass `--output-dir <user path>` at initialization only when the user asks for a custom location (relative paths resolve against the audited build root; external directories remain supported). Consume the resolved `run_dir`/`output_dir` returned by `init` and reuse it for every later controller/worker command; all parallel workers share the same controller-owned run root, and no subagent invents its own output path. Pipeline outputs cannot overwrite authoritative source/build inputs: the managed subtree is excluded from scope discovery, digests, source snapshots, and PoC build-tree copies.
+- If the audited workspace contains incompatible Solidity build profiles, pass a validated `--compilation-plan <path>` to `init`. The plan runs targets serially and aggregates their evidence into one Feature Map. It accepts only target paths, scope roots, optional `foundry_profile`, and expected compiler versions; it never accepts free shell commands. A failed target or uncovered scope file keeps Recon `CONSERVATIVE_DEGRADED`, so absence filtering remains disabled. Do not rewrite missing or unknown evidence as `PRESENT` to make the next phase start.
 
 ## Repository Trust Gate
 
@@ -73,6 +74,7 @@ migrate those internal IDs.
 python3 <suite-root>/scripts/audit_run.py init <target> --domain <domain>
 # output defaults to <original-build-root>/.evm-auditor-work; add
 # --output-dir <path> for a custom location and keep --run-dir as its legacy alias
+# add --compilation-plan <path> when one workspace needs several build profiles
 python3 <suite-root>/scripts/audit_run.py next --output-dir <run-dir>
 python3 <suite-root>/scripts/audit_run.py status --output-dir <run-dir>
 python3 <suite-root>/scripts/audit_run.py report --output-dir <run-dir>
@@ -363,8 +365,8 @@ edit global run files, never rerun Recon/Routing/Selector, never turn
 The model may choose the audit scope, provide evidence-backed environment and
 Domain resolutions, complete required context, classify Initial Review cards,
 write Deep Audit/Vulnerability Validation records, and assign structured
-severity plus reporting details after confirmation. Per-Domain work follows
-the Orchestration section: parallel dispatch only where the active runtime
+severity plus reporting details after confirmation. Per-Domain work follows the
+Orchestration section: parallel dispatch only where the active runtime
 actually supports it, always within the stage's `max_concurrent_workers`
 slot bound; otherwise sequential execution of the same workflow.
 

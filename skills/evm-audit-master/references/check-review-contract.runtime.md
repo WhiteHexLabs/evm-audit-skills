@@ -1,6 +1,6 @@
 # Runtime Per-Check Review Contract
 
-Review only IDs promoted from Screen to Deep in the immutable routing-v7 manifest.
+Review only IDs promoted from Screen to Deep in the immutable routing-v8 manifest.
 Filtered and Deferred IDs remain manifest-visible. Each deep-review record is
 append-only JSONL at `reviews/review-<owner-domain>.jsonl`; Markdown is a generated view.
 

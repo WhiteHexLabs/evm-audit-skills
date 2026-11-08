@@ -1092,8 +1092,22 @@ def validate_target_snapshot(
     """
     try:
         from scope_context import compilation_digests, resolve_build_root, resolve_scope_root, scope_inventory
+        from evm_audit_runtime.compilation import (
+            bind_compilation_digest,
+            compilation_plan_digest,
+            normalize_compilation_plan,
+            target_results_digest,
+            validate_target_results,
+        )
     except ImportError:  # pragma: no cover - supports package-style imports
         from scripts.scope_context import compilation_digests, resolve_build_root, resolve_scope_root, scope_inventory
+        from evm_audit_runtime.compilation import (
+            bind_compilation_digest,
+            compilation_plan_digest,
+            normalize_compilation_plan,
+            target_results_digest,
+            validate_target_results,
+        )
 
     recon = manifest["feature_map"]["recon_context"]
     target_root = resolve_scope_root(Path(recon["target_root"]))
@@ -1115,6 +1129,26 @@ def validate_target_snapshot(
         compiler_versions=recon.get("compiler_versions"),
         excluded_roots=excluded_roots,
     )
+    plan = None
+    if recon.get("compilation_plan") is not None:
+        plan = normalize_compilation_plan(
+            recon["compilation_plan"],
+            audit_root=target_root,
+            build_root=build_root,
+            managed_output_root=managed_output_root,
+        )
+        target_results = recon.get("compilation_targets")
+        validate_target_results(plan, target_results, files)
+        plan_digest = compilation_plan_digest(plan)
+        results_digest = target_results_digest(target_results)
+        if (
+            recon.get("compilation_plan_digest") != plan_digest
+            or recon.get("compilation_targets_digest") != results_digest
+        ):
+            raise ValueError("Compilation plan identity is stale or invalid; rerun Recon and Selector.")
+        current["compilation_input_digest"] = bind_compilation_digest(
+            current["compilation_input_digest"], plan_digest, results_digest
+        )
     expected = {
         "source_digest": recon["source_digest"],
         "audit_source_digest": recon["audit_source_digest"],

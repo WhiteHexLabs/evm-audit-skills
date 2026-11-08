@@ -11,8 +11,9 @@ source → Project Analysis (`RECON`/`ROUTING`) → Environment Gate → Domain 
        → severity → runnable PoC gate for High/Critical → Final Report (`REPORT`)
 ```
 
-Standalone runs use the controller-owned output directory and run Project
-Analysis once.
+Standalone runs use the controller-owned output directory and run one logical
+Project Analysis snapshot. A compilation plan may execute several analyzer
+targets serially inside that snapshot.
 Orchestrated Domain agents consume the shared context, immutable manifest,
 Initial Review results, and rendered runtime file without rerunning routing.
 
@@ -109,6 +110,14 @@ operational `config/run-layout.json` sidecar, never in routing identity.
 Generated pipeline artifacts are still forbidden from writing into
 authoritative source/build trees.
 
+When one workspace contains incompatible Solidity compiler or Foundry
+profiles, `audit_run.py init` accepts `--compilation-plan <path>`. The plan is
+schema-validated and contains only relative targets, scope roots, optional
+Foundry profile names, and expected compiler versions. Recon executes units
+serially, records coverage and configuration results, and binds the normalized
+plan plus target results into `compilation_input_digest`. A failed or
+unassigned unit keeps complete compilation and absence filtering disabled.
+
 The low-level CLIs below are runtime interfaces. The short user-facing entry
 point is `scripts/audit_run.py`; its `next` command returns the next required
 phase and its `report` command always re-derives the current state.
@@ -134,6 +143,7 @@ audit artifacts.
 | Artifact | Authoritative? | Integrity binding | Failure behavior |
 |---|---:|---|---|
 | Feature Map | yes for Project Analysis (`RECON`) snapshot | source/compilation lineage | fail closed |
+| `config/compilation-plan.json` + `recon_context.compilation_targets` | yes for multi-profile Recon | normalized plan + target-results digests | failed/unassigned target keeps Recon degraded |
 | Project Analysis routing manifest (`ROUTING`) | yes | `routing_snapshot_id` | invalid snapshot |
 | Context Analysis artifacts (`DOMAIN_RESOLUTION`, `DOMAIN_CONTEXT`) | yes | routing/review snapshot | block downstream |
 | Initial Review results (`SCREEN`) | yes | review inputs | block downstream |

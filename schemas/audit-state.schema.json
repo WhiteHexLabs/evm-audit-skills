@@ -12,6 +12,8 @@
     "registry_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "source_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "compilation_input_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "compilation_plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "compilation_targets_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "status": {"enum": ["INVALID_SNAPSHOT", "INCOMPLETE_COVERAGE", "INCOMPLETE_DOMAIN_ROUTING", "INCOMPLETE_CONTEXT", "INCOMPLETE_REVIEW", "COMPLETE_CLEAN", "COMPLETE_WITH_FINDINGS"]},
     "complete": {"type": "boolean"},
     "clean": {"type": "boolean"},
@@ -25,7 +27,9 @@
         "absence_filtering_complete": {"type": "boolean"},
         "mode": {"enum": ["COMPLETE", "CONSERVATIVE_DEGRADED"]},
         "uncompiled_paths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "compilation_provenance": {"enum": ["EXACT_COMPILATION_CLOSURE", "CONSERVATIVE_BUILD_ROOT_FALLBACK"]}
+        "compilation_provenance": {"enum": ["EXACT_COMPILATION_CLOSURE", "CONSERVATIVE_BUILD_ROOT_FALLBACK"]},
+        "unassigned_paths": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "failed_units": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
       }
     },
     "coverage": {

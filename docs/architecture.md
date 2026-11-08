@@ -5,7 +5,7 @@ The suite has four planes:
 ```text
  KNOWLEDGE  canonical-checks.json + domains/*.json + feature-detectors.json
      ↓
-ROUTING    Project Analysis (`RECON`, `ROUTING`) → environment → Domain → check gates → immutable manifest v7
+ROUTING    Project Analysis (`RECON`, `ROUTING`) → environment → Domain → check gates → immutable manifest v8
      ↓
 RUNTIME    manifest → Context Analysis → Initial Review (`SCREEN`) → candidate-only Deep Audit (`DEEP_REVIEW`) → Vulnerability Validation (`PROOF`)
      ↓

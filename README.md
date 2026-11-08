@@ -191,6 +191,20 @@ Vulnerability Validation artifacts remain beside it. Users who do not want the
 output appearing as untracked files may add `.evm-auditor-work/` to their
 `.gitignore`.
 
+For a workspace with incompatible Solidity build profiles, initialize with a
+validated compilation plan:
+
+```bash
+python3 scripts/audit_run.py init <workspace> \
+  --audit-root <workspace> --build-root <workspace> \
+  --compilation-plan compilation-plan.json
+```
+
+The plan runs each declared target serially and aggregates coverage into one
+lineage-bound Feature Map. A failed target or uncovered scope file keeps the
+run conservative; it never becomes an absence or a reason to relabel
+`UNKNOWN` as `PRESENT`.
+
 ## Using Individual Domain Skills
 
 Use `evm-audit-master` by default. When the audit scope is already known, use

@@ -1,6 +1,6 @@
 # Project Analysis (`RECON`, `ROUTING`)
 
-Run Project Analysis against the audit scope and its distinct compilation/build root. Its Feature Map v4 records the
+Run Project Analysis against the audit scope and its distinct compilation/build root. Its Feature Map v5 records the
 scope digest, compilation-input digest, compilation coverage, analyzed files,
 tool versions, actual compiler versions, and a scope-bound `recon_context`. The
 map also classifies each presence evidence item as `AUDIT_SCOPE`, `DEPENDENCY`,
@@ -36,9 +36,23 @@ python3 scripts/recon.py <target-project-or-solidity-file> --audit-root <audit-s
   --output recon-features.json --code-index-out code-index.json
 ```
 
+当一个工作区包含互不兼容的 Solidity 编译配置时，使用受校验的编译计划逐目标串行运行 Recon，并把结果绑定到同一个 Feature Map：
+
+```bash
+python3 scripts/recon.py <workspace> --audit-root <workspace> --build-root <workspace> \
+  --compilation-plan compilation-plan.json --output recon-features.json
+```
+
+计划的 `units` 为每个编译目标声明 `target`、负责的 `scope_roots`，以及可选的
+`foundry_profile` 和 `expected_compiler_versions`。目标失败、配置未验证或 scope
+文件未覆盖时，Feature Map 保持 `CONSERVATIVE_DEGRADED`；不能把其它目标的成功
+当作缺失证据。`recon_context.compilation_targets`、`compilation_plan_digest` 和
+`compilation_targets_digest` 记录覆盖与身份。计划不接受自由 shell 命令，Foundry
+profile 只通过 `FOUNDRY_PROFILE` 和现有 `foundry.toml` 选择。
+
 ## Project Analysis: Routing (`ROUTING`)
 
-Project Analysis routing v7 applies environment, Domain, and canonical feature gates. Domains
+Project Analysis routing v8 applies environment, Domain, and canonical feature gates. Domains
 are `SELECTED`, `DEFERRED`, or `FILTERED`; an `UNKNOWN` Domain is Deferred with
 a small screening card, and only confirmed absence or confirmed environment
 mismatch can filter. Related Domains never auto-expand.
@@ -52,7 +66,7 @@ python3 scripts/select_checks.py --feature-map recon-features.json --target-root
   --format json
 ```
 
-The v7 manifest records selected, Deferred, and filtered Domain/check stages;
+The v8 manifest records selected, Deferred, and filtered Domain/check stages;
 registry, source, dependency, build-config, and compilation fingerprints; and
 evidence-backed environment facts. It also snapshots immutable required-context
 definitions; resolution state lives in `domain-context.json`. `fork_block` is
@@ -99,7 +113,7 @@ unresolved edges, selected edges, then boundary edges; each category is already
 stably sorted. The actual compilation closure is used for the compilation
 digest when Slither exposes it, with the conservative full-source fallback
 otherwise; `recon_quality.compilation_provenance` records which mode was used.
-Older v4 Feature Maps without that additive field are treated as the
+Older Feature Maps without multi-target fields are treated as the
 conservative fallback for navigation/lineage purposes and never upgraded to
 exact-closure provenance.
 

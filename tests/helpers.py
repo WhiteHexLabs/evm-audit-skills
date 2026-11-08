@@ -53,7 +53,7 @@ def synthetic_feature_map(
             evidence = [{"kind": "manual", "location": "fixture", "reason": "explicit fixture evidence", "scope_origin": "AUDIT_SCOPE"}]
         features[feature] = {"status": status, "evidence": evidence}
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "recon_context": {
             "target_root": str(target.resolve()),
             "build_root": str(build_root.resolve()),

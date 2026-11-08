@@ -91,6 +91,11 @@ def validate_run(
         validate_target_snapshot(manifest, managed_output_root=managed_output_root)
     except (ValueError, KeyError) as error:
         invalid.append(str(error))
+    recon_quality = manifest.get("feature_map", {}).get("recon_context", {}).get("recon_quality")
+    if isinstance(recon_quality, dict) and recon_quality.get("compilation_complete") is not True:
+        coverage_errors.append(
+            "Recon compilation coverage is incomplete; final completion requires every declared compilation target"
+        )
 
     try:
         selected = {entry["canonical_id"] for entry in selected_entries(manifest, domain_resolution=domain_resolution)}
@@ -199,8 +204,6 @@ def validate_run(
         confirmed=bool(confirmed),
     )
     complete = status in COMPLETE_STATES
-    recon_quality = manifest.get("feature_map", {}).get("recon_context", {}).get("recon_quality")
-
     reasons: list[str] = []
     for reason in [*invalid, *coverage_errors, *domain_errors, *context_errors, *review_errors]:
         if reason not in reasons:
@@ -213,6 +216,11 @@ def validate_run(
         "registry_sha256": manifest.get("audit_context", {}).get("registry_sha256"),
         "source_digest": manifest.get("audit_context", {}).get("source_digest"),
         "compilation_input_digest": manifest.get("audit_context", {}).get("compilation_input_digest"),
+        **{
+            key: manifest.get("audit_context", {}).get(key)
+            for key in ("compilation_plan_digest", "compilation_targets_digest")
+            if key in manifest.get("audit_context", {})
+        },
         "status": status,
         "complete": complete,
         "clean": status == "COMPLETE_CLEAN",

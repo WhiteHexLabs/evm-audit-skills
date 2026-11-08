@@ -51,3 +51,7 @@ Open `AUDIT-REPORT.md` for the final findings. Supporting Project Analysis,
 Context Analysis, Initial Review, Deep Audit, and Vulnerability Validation
 evidence is kept beside it; only `CONFIRMED` records enter the Final Report.
 Required context and unresolved Deferred Domains prevent a clean completion.
+
+If one workspace contains incompatible Solidity profiles, pass a validated
+`--compilation-plan <path>` to `init`. Each target is analyzed serially and
+bound into one Feature Map; any failed target keeps absence filtering disabled.

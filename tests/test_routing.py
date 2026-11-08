@@ -261,7 +261,7 @@ class RoutingTests(unittest.TestCase):
             }
             validate_recon_context(feature_map["recon_context"], EMPTY_TARGET, ())
 
-    def test_feature_map_v4_rejects_unsupported_cli_and_formats(self) -> None:
+    def test_feature_map_v5_rejects_unsupported_cli_and_formats(self) -> None:
         help_result = subprocess.run(
             [sys.executable, "scripts/select_checks.py", "--help"],
             cwd=ROOT,
