@@ -184,49 +184,30 @@ severity.
 
 ### Model policy (Codex / ZCode)
 
-The stage execution policy is stored separately from audit artifacts at
-`<run-dir>/config/codex-model-profile.json`. It supports `provider: codex`
-(reasoning efforts) and `provider: zcode` (model-specific thinking levels —
-GLM-5.3 `low/high/max`, GLM-5.3-Flash `default`/unpinned — plus a worker
-agent type per fan-out stage). Confirm it once in the Master Skill, then
-persist either the canonical profile or a validated custom profile. New
-runs use the user-level default for the chosen provider
-(`~/.codex/evm-audit-model-profile.json` or
-`~/.zcode/evm-audit-model-profile.json`) when it exists:
+Every stage and every worker agent runs on the host's default model. The
+suite performs no stage-, agent-, or provider-level model or effort
+selection: worker agent templates pin no `model`/`thoughtLevel` frontmatter
+(`install.sh` rejects a pinned model), and there is no per-run or user-level
+model profile artifact. To audit with a different model, change the
+host/session model itself.
 
-```bash
-python3 scripts/audit_run.py models --init-global --provider codex
-python3 scripts/audit_run.py models --init-global --provider zcode
-python3 scripts/audit_run.py init <target> --run-dir <run-dir> \
-  --domain <domain> --provider zcode --accept-default-models
-python3 scripts/audit_run.py init <target> --run-dir <run-dir> \
-  --domain <domain> --model-profile <profile.json>
-python3 scripts/audit_run.py models --run-dir <run-dir>
-python3 scripts/audit_run.py models --run-dir <run-dir> --reset-defaults
-```
-
-`--reset-defaults` restores the canonical defaults of the provider the run
-already uses. Profiles with older schema versions are rejected; see the
-[model profile documentation](codex-model-profile.md).
-
-`next` and `status` expose `recommended_execution` for the next phase, and
-stderr gives the same compact model handoff (thought level and worker agent
-name on zcode fan-out stages). On dispatchable worker stages the entry also
-carries `max_concurrent_workers`, the in-flight slot bound for the wave's
-bounded dispatch queue. The controller does not switch the active
-model or thought level of the session it runs in; zcode controller-stage
-entries are handoff recommendations for the main session, while worker
-stages run on their configured custom agent types. An absent profile on an
-older run resolves to the canonical default in memory and does not change
-audit state. The global file is read only during `init`; the run-scoped
-copy wins afterward.
+`next` and `status` expose `recommended_execution` for the next phase. It
+carries dispatch metadata only: the worker agent type that executes fan-out
+stages on runtimes with sub-agent dispatch (`agent: null` on controller
+stages), plus `max_concurrent_workers`, the in-flight slot bound for the
+wave's bounded dispatch queue. stderr prints the same compact handoff
+(worker agent name and dispatch slots on fan-out stages). The controller
+never switches the model of the session it runs in; controller stages are
+handoff recommendations for the main session, while worker stages run on
+their configured custom agent types.
 
 Project Analysis, routing, validation, hashing, and report admission remain
-deterministic controller logic; the recommendation applies only to model judgment.
+deterministic controller logic; the execution metadata applies only to
+worker dispatch.
 
-The profile is execution metadata only. It is excluded from routing, review,
-source, compilation, registry, and report identity digests; changing it cannot
-stale valid security evidence.
+`recommended_execution` is execution metadata only. It is excluded from
+routing, review, source, compilation, registry, and report identity
+digests; changing it cannot stale valid security evidence.
 
 Runtime dependencies are locked with versions and distribution hashes in
 `requirements-runtime.lock`. Install reproducibly with:

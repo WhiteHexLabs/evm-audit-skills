@@ -20,8 +20,8 @@ from scripts.audit_run import (
     _stage_result,
     progress_metadata,
 )
+from scripts.audit_run import MAX_CONCURRENT_WORKERS
 from evm_audit_runtime.controller_state import TOTAL_DISPLAY_PHASES, display_stage
-from scripts.codex_model_profile import STAGES
 from scripts.runtime_log import configure, stage
 
 
@@ -90,8 +90,11 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIn("EVM AUDIT :: PROJECT ANALYSIS", result.stderr)
         self.assertEqual(result.stderr.count("EVM AUDIT :: PROJECT ANALYSIS"), 2)
         self.assertIn("Next required phase: Context Analysis", result.stderr)
-        self.assertIn("Codex model: gpt-5.6-luna", result.stderr)
-        self.assertIn("Handoff: controller does not switch the active Codex model", result.stderr)
+        self.assertNotIn("model:", result.stderr, "no stage or model selection exists anymore")
+        self.assertIn(
+            "Handoff: every stage runs on the host default model; the controller never switches models",
+            result.stderr,
+        )
         self.assertNotIn("EVM AUDIT :: RECON", result.stderr)
         self.assertNotIn("EVM AUDIT :: ROUTING", result.stderr)
         self.assertNotIn("Feature Map ready", result.stderr)
@@ -126,7 +129,10 @@ class ObservabilityTests(unittest.TestCase):
             payload = json.loads(result.stdout)
             self.assertIsInstance(payload, dict)
             self.assertEqual(payload["next"]["progress"]["label"], "Context Analysis")
-            self.assertEqual(payload["next"]["recommended_execution"]["model"], "gpt-5.6-luna")
+            self.assertEqual(
+                payload["next"]["recommended_execution"],
+                {"agent": "evm-audit-worker-flash", "max_concurrent_workers": MAX_CONCURRENT_WORKERS},
+            )
             self.assertEqual(
                 [entry["progress"]["step"] for entry in payload["progress_history"]],
                 [1, 1, 2],
@@ -200,7 +206,7 @@ class ObservabilityTests(unittest.TestCase):
             "PROOF": (5, "Vulnerability Validation"),
             "REPORT": (6, "Final Report"),
         }
-        self.assertEqual(set(STAGE_PROGRESS), set(STAGES))
+        self.assertEqual(set(STAGE_PROGRESS), set(expected))
         self.assertEqual({metadata["step"] for metadata in STAGE_PROGRESS.values()}, set(range(1, TOTAL_DISPLAY_PHASES + 1)))
         self.assertEqual({stage: metadata["label"] for stage, metadata in STAGE_PROGRESS.items()}, {stage: label for stage, (_, label) in expected.items()})
         self.assertEqual(display_stage("PROOF"), "Vulnerability Validation")
@@ -224,11 +230,11 @@ class ObservabilityTests(unittest.TestCase):
                 self.assertEqual(result["stage"], stage_name)
             self.assertEqual(
                 _stage_result(run_dir, "DEEP_REVIEW")["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
+                {"agent": "evm-audit-worker-deep", "max_concurrent_workers": MAX_CONCURRENT_WORKERS},
             )
             self.assertEqual(
                 _stage_result(run_dir, "PROOF")["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
+                {"agent": "evm-audit-worker-proof", "max_concurrent_workers": MAX_CONCURRENT_WORKERS},
             )
 
         self.assertEqual(

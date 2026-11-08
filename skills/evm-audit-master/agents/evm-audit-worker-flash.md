@@ -1,7 +1,6 @@
 ---
 name: evm-audit-worker-flash
-description: EVM audit domain worker running on GLM-5.3-Flash (fast, ~1/10 cost). Spawned per Domain by the evm-audit-master orchestrator for the Domain Context stage only.
-model: GLM-5.3-Flash
+description: EVM audit domain worker running on the host default model. Spawned per Domain by the evm-audit-master orchestrator for the Domain Context stage only.
 ---
 
 You are one domain worker in the evm-audit-skills pipeline, dispatched for

@@ -298,7 +298,7 @@ Do not embed large amounts of executable runtime logic into Domain JSON.
 
 Contains user/model-facing Skill packages and generated checklist views.
 
-`skills/evm-audit-master/agents/` ships the ZCode custom worker agent templates (`evm-audit-worker-flash`, `evm-audit-worker-deep`, `evm-audit-worker-proof`); their pinned `model` and `thoughtLevel` frontmatter is the execution contract the model-profile validator checks against. `install.sh zcode` installs them into `~/.zcode/agents/`; the audit Skill itself must never mutate agent configuration at runtime.
+`skills/evm-audit-master/agents/` ships the ZCode custom worker agent templates (`evm-audit-worker-flash`, `evm-audit-worker-deep`, `evm-audit-worker-proof`); they pin no model or thought level — every worker runs on the host's default model, and `install.sh zcode` rejects a template that pins one. `install.sh zcode` installs them into `~/.zcode/agents/`; the audit Skill itself must never mutate agent configuration at runtime.
 
 Keep global audit safety rules centralized in the Master Skill / shared review contract.
 
@@ -576,15 +576,13 @@ Measure token/byte savings separately from correctness.
 
 ---
 
-## 9.4 Model profile defaults
+## 9.4 Execution and model policy
 
-The stage-model profile supports two providers (`codex`, `zcode`). Do not change default Codex stage-model assignments or reasoning effort unless the task explicitly asks for that change; the same applies to the default zcode worker assignments (controller stages on the main agent, `DOMAIN_CONTEXT` on `evm-audit-worker-flash`, `SCREEN`/`DEEP_REVIEW` on `evm-audit-worker-deep`, `PROOF` on `evm-audit-worker-proof`). ZCode thinking levels are model-specific: GLM-5.3 supports `low`/`high`/`max`; GLM-5.3-Flash is `default` (unpinned). Do not invent levels ZCode does not document.
+The suite performs no stage-, agent-, or provider-level model or effort selection: every stage and every worker agent runs on the host's default model. Worker agent templates must not pin `model`/`thoughtLevel` frontmatter, and `install.sh` rejects a pinned model. Do not reintroduce a per-stage or per-provider model profile artifact; if a task seems to need one, surface the conflict instead of weakening this rule.
 
-A zcode stage entry's `agent`, `model`, and `thought_level` must match the full execution contract pinned in the shipped worker agent template, and the agent must be allowed to execute that stage; the validator rejects mismatches. A worker dispatch must never cross a stage boundary into a different execution contract.
+The stage-to-worker-agent dispatch map (controller stages on the main agent, `DOMAIN_CONTEXT` on `evm-audit-worker-flash`, `SCREEN`/`DEEP_REVIEW` on `evm-audit-worker-deep`, `PROOF` on `evm-audit-worker-proof`) and the worker dispatch slot bound are execution metadata, not security lineage. A worker dispatch must never cross a stage boundary into a different agent's stage set.
 
-Model profile configuration is execution metadata, not security lineage.
-
-Do not claim that the runtime actually switches models unless a real supported runtime mechanism performs the switch. The controller never switches its own active model or thinking level; zcode controller-stage entries are handoff recommendations. ZCode worker dispatch through the Master Skill's orchestration is a real dispatch mechanism; Codex runs the same workflow sequentially.
+Do not claim that the runtime actually switches models unless a real supported runtime mechanism performs the switch. The controller never switches its own active model or thinking level. ZCode worker dispatch through the Master Skill's orchestration is a real dispatch mechanism; Codex runs the same workflow sequentially.
 
 ---
 

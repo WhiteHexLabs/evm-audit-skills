@@ -138,9 +138,6 @@ banner from the returned stage fields.
 +----------------------------------------------+
   Phase: <step>/<total>
   <summary>
-  Model: <model>
-  Reasoning: <reasoning_effort>     (codex)
-  Thought level: <thought_level>    (zcode)
   Worker agent: <agent>             (zcode fan-out stages only)
   Dispatch slots: <max_concurrent_workers>   (zcode fan-out stages only)
 ```
@@ -149,68 +146,25 @@ Use only controller-provided phase and counts; never infer them from stderr.
 Keep UI-only last-phase state to avoid repeating a banner when no phase
 transition occurred, and never persist that state into audit artifacts. Do not
 show these banners for internal helper calls such as `recon.py`,
-`select_checks.py`, `render_runtime.py`, or `validate_audit_run.py`. The model
-recommendation is a handoff, not an automatic active-model switch.
+`select_checks.py`, `render_runtime.py`, or `validate_audit_run.py`. The
+execution metadata is a dispatch handoff, not an automatic active-model
+switch.
 
-## Model profile policy
+## Model policy
 
-The stage-model profile supports two providers: `codex` (Codex CLI stages)
-and `zcode` (ZCode main agent plus custom worker agent types). Ask once
-before starting a new audit with no confirmed profile.
+Every stage and every worker agent runs on the host's default model. The
+suite performs no stage-, agent-, or provider-level model or effort
+selection: worker agent templates pin no `model`/`thoughtLevel` frontmatter,
+and there is no per-run model profile artifact. If the user asks for a
+different model, they change the host/session model themselves.
 
-Codex default (`--provider codex`):
-
-```text
-EVM AUDIT :: MODEL PROFILE (codex)
-Project Analysis: gpt-5.6-luna max
-Context Analysis: gpt-5.6-luna max
-Initial Review: gpt-5.6-luna max
-Deep Audit: gpt-5.6-luna max
-Vulnerability Validation: gpt-5.6-luna max
-Final Report: gpt-5.6-luna max
-
-Use this default profile?
-1. Use defaults
-2. Customize
-```
-
-ZCode default (`--provider zcode`): controller stages (Project Analysis,
-Domain Resolution, Final Report) run on the main agent (`GLM-5.3`, agent
-`null`, handoff recommendations only); Domain Context runs on
-`evm-audit-worker-flash` (GLM-5.3-Flash, thought level unpinned/default);
-Initial Review and Deep Audit run on `evm-audit-worker-deep` (GLM-5.3,
-`thoughtLevel: max`); Vulnerability Validation runs on
-`evm-audit-worker-proof` (GLM-5.3, `thoughtLevel: max`). Every GLM-5.3
-stage pins max effort; GLM-5.3-Flash has no verified explicit level.
-Initial Review deliberately uses the flagship model: `NOT_APPLICABLE_CONFIRMED`
-is a trusted-absence decision. Each worker agent type pins exactly one
-model/thought-level contract; a worker invocation never crosses a stage
-boundary into a different contract.
-
-The user-level default lives at `~/.codex/evm-audit-model-profile.json` or
-`~/.zcode/evm-audit-model-profile.json` (one per provider);
-`python3 <suite-root>/scripts/audit_run.py models --init-global --provider <codex|zcode>`
-creates it once with canonical defaults. If it exists, display that validated
-profile in the prompt instead of the built-in table. On confirmation the
-controller snapshots the selected values into the run (`init --provider ...`,
-or `--accept-default-models`, or a validated file via `--model-profile`).
-Persist the resolved choice in `<run-dir>/config/codex-model-profile.json`;
-once present, do not ask again. For customization, show the full current
-profile once and accept only changed lines such as `SCREEN = gpt-5.6-sol/high`
-(codex) or `SCREEN = GLM-5.3/max/evm-audit-worker-deep` (zcode), preserving
-omitted internal stages. A zcode stage entry must match the full execution
-contract of its `agent` — model and thought level as pinned in the shipped
-worker template, and a stage the agent is allowed to execute; the validator
-rejects any mismatch. GLM-5.3 thought levels are `low`, `high`, and `max`;
-GLM-5.3-Flash uses `default` (no verified explicit level).
-
-At each transition, follow `recommended_execution`. This is a handoff only:
-the controller never switches its own active model. On Codex the stage model
-changes only when the user relaunches the stage session with a different
-model; on ZCode the worker stages run on the configured custom agent types
-dispatched by the Orchestration section below. Do not claim any other switch
-mechanism. The profile is execution metadata and never security lineage or
-artifact identity.
+`recommended_execution` carries dispatch metadata only: the worker agent
+type that executes fan-out stages on runtimes with sub-agent dispatch
+(`null` on controller stages) plus `max_concurrent_workers`, the slot bound
+of the wave's bounded dispatch queue. Follow it for dispatch, not for model
+selection. It is execution metadata and never security lineage or artifact
+identity. Do not claim any model-switching mechanism the runtime does not
+actually provide.
 
 ## Orchestration (main agent + Domain workers)
 
@@ -238,8 +192,8 @@ Execution modes:
   Never copy agent files into `~/.zcode/agents/` during an audit;
   installation is `install.sh`'s job, and a new session is required for the
   definitions to register. Dispatch one worker per Domain that has work in
-  the current stage, with the agent type named by the stage profile
-  (`recommended_execution.agent`). Dispatch is a bounded slot queue: hold at
+  the current stage, with the agent type named by
+  `recommended_execution.agent`. Dispatch is a bounded slot queue: hold at
   most `recommended_execution.max_concurrent_workers` worker agents in
   flight at once (the shipped contract is `4`), keep the remaining Domains
   as a FIFO dispatch queue in sorted-Domain order, and each time a
@@ -263,7 +217,7 @@ contract for that stage. If any check fails, stop instead of dispatching a
 guessed or fallback agent.
 
 Waves (a worker invocation never crosses a stage boundary — each agent type
-pins one model/thought-level contract):
+is scoped to a fixed set of stages):
 
 1. **Controller head.** `init` (Project Analysis), then `next` until Domain
    Resolution is terminal and `next` returns `DOMAIN_CONTEXT`.

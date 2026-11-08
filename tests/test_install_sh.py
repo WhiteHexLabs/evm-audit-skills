@@ -48,12 +48,17 @@ class InstallShTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(len(_skills(home)), 20)
             for name in REQUIRED_AGENTS:
-                link = home / ".zcode/agents" / f"{name}.md"
-                self.assertTrue(link.is_symlink(), link)
+                copy = home / ".zcode/agents" / f"{name}.md"
+                # Agents install as regular file copies: ZCode only registers
+                # real files in its agents directory.
+                self.assertTrue(copy.is_file(), copy)
+                self.assertFalse(copy.is_symlink(), copy)
                 self.assertIn("new ZCode session is required", result.stdout)
-                text = link.read_text(encoding="utf-8")
+                text = copy.read_text(encoding="utf-8")
                 self.assertIn(f"name: {name}", text)
-                self.assertIn("model:", text)
+                # Workers run on the host default model; a pinned model
+                # frontmatter would reintroduce per-agent model selection.
+                self.assertNotIn("model:", text)
 
     def test_idempotent_rerun(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -63,7 +68,9 @@ class InstallShTests(unittest.TestCase):
             self.assertEqual(again.returncode, 0, again.stderr)
             self.assertEqual(len(_skills(home)), 20)
             for name in REQUIRED_AGENTS:
-                self.assertTrue((home / ".zcode/agents" / f"{name}.md").is_symlink())
+                copy = home / ".zcode/agents" / f"{name}.md"
+                self.assertTrue(copy.is_file(), copy)
+                self.assertFalse(copy.is_symlink(), copy)
 
     def test_conflicting_skill_entry_blocks_all_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

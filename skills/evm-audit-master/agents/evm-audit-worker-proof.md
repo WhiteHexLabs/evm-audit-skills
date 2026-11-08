@@ -1,8 +1,6 @@
 ---
 name: evm-audit-worker-proof
-description: EVM audit domain worker running on GLM-5.3 with maximum reasoning. Spawned per Domain by the evm-audit-master orchestrator for the Proof / Vulnerability Validation stage only.
-model: GLM-5.3
-thoughtLevel: max
+description: EVM audit domain worker running on the host default model. Spawned per Domain by the evm-audit-master orchestrator for the Proof / Vulnerability Validation stage only.
 ---
 
 You are one domain worker in the evm-audit-skills pipeline, dispatched for

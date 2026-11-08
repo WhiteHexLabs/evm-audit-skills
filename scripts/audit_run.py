@@ -36,28 +36,6 @@ try:
 except ImportError:  # pragma: no cover
     from scripts.runtime_log import configure, error, info, stage, success, warning
 
-try:
-    from codex_model_profile import (
-        PROVIDERS,
-        default_profile,
-        global_profile_path,
-        init_global_profile,
-        load_profile,
-        load_global_profile,
-        stage_model,
-        write_profile,
-    )
-except ImportError:  # pragma: no cover
-    from scripts.codex_model_profile import (
-        PROVIDERS,
-        default_profile,
-        global_profile_path,
-        init_global_profile,
-        load_profile,
-        load_global_profile,
-        stage_model,
-        write_profile,
-    )
 
 try:
     from audit_artifacts import (
@@ -218,7 +196,6 @@ def paths(run_dir: Path) -> dict[str, Any]:
         "report_input_details": run_dir / "report-inputs/finding-details.json",
         "poc_evidence": run_dir / "reviews/poc-evidence.json",
         "poc_verification": run_dir / "reviews/poc-verification.json",
-        "model_profile": run_dir / "config/codex-model-profile.json",
         "repository_trust": run_dir / "config/repository-trust.json",
         "compilation_plan": run_dir / "config/compilation-plan.json",
         "run_layout": run_dir / "config/run-layout.json",
@@ -277,42 +254,40 @@ def _stage_label(stage_name: str) -> str:
     return progress_metadata(stage_name)["label"]
 
 
-def _effective_model_profile(run_dir: Path) -> dict[str, Any]:
-    profile_path = paths(run_dir.resolve())["model_profile"]
-    return load_profile(profile_path) if profile_path.exists() else default_profile()
-
-
 # Upper bound on simultaneously in-flight per-Domain worker agents during a
 # wave. The controller dispatches the wave as a bounded slot queue (a freed
 # slot is backfilled immediately); scheduling only, never coverage.
 MAX_CONCURRENT_WORKERS = 4
 
+# Worker dispatch map: the ZCode worker agent type that executes each
+# fan-out stage on hosts with sub-agent dispatch. Controller stages (and
+# hosts without sub-agent dispatch, e.g. Codex) run on the main agent. This
+# is scheduling metadata only: every stage and every worker runs on the
+# host's default model; the suite never selects a model or effort level.
+STAGE_WORKER_AGENTS: dict[str, str] = {
+    "DOMAIN_CONTEXT": "evm-audit-worker-flash",
+    "SCREEN": "evm-audit-worker-deep",
+    "DEEP_REVIEW": "evm-audit-worker-deep",
+    "PROOF": "evm-audit-worker-proof",
+}
 
-def recommended_execution(run_dir: Path, stage_name: str) -> dict[str, Any]:
-    profile = _effective_model_profile(run_dir)
-    execution: dict[str, Any] = {"provider": profile["provider"], **stage_model(profile, stage_name)}
-    if execution.get("agent") is not None:
+
+def recommended_execution(stage_name: str) -> dict[str, Any]:
+    agent = STAGE_WORKER_AGENTS.get(stage_name)
+    execution: dict[str, Any] = {"agent": agent}
+    if agent is not None:
         execution["max_concurrent_workers"] = MAX_CONCURRENT_WORKERS
     return execution
 
 
-def _log_model_guidance(run_dir: Path | None, stage_name: str) -> None:
+def _log_execution_guidance(run_dir: Path | None, stage_name: str) -> None:
     if run_dir is None:
         return
-    execution = recommended_execution(run_dir, stage_name)
-    label = "Codex" if execution["provider"] == "codex" else "Agent"
-    info(f"{label} model: {execution['model']}")
-    if execution["provider"] == "codex":
-        info(f"Reasoning: {execution['reasoning_effort']}")
-    else:
-        info(f"Thought level: {execution['thought_level']}")
+    execution = recommended_execution(stage_name)
     if execution.get("agent") is not None:
         info(f"Worker agent: {execution['agent']}")
         info(f"Dispatch slots: at most {execution['max_concurrent_workers']} concurrent workers")
-    if execution["provider"] == "codex":
-        info("Handoff: controller does not switch the active Codex model")
-    else:
-        info("Handoff: controller does not switch its own model or thought level; workers run on their configured agent types")
+    info("Handoff: every stage runs on the host default model; the controller never switches models")
 
 
 def _location_metadata(run_dir: Path) -> dict[str, str]:
@@ -336,7 +311,7 @@ def _stage_result(
         "stage": stage_name,
         **values,
         "progress": progress_metadata(stage_name, summary=summary),
-        "recommended_execution": recommended_execution(run_dir, stage_name),
+        "recommended_execution": recommended_execution(stage_name),
         "location": _location_metadata(run_dir),
     }
     if navigation is not None:
@@ -355,7 +330,7 @@ def _progress_history_entry(
         "stage": stage_name,
         "state": state,
         "progress": progress_metadata(stage_name, summary=summary),
-        "recommended_execution": recommended_execution(run_dir, stage_name),
+        "recommended_execution": recommended_execution(stage_name),
     }
 
 
@@ -451,7 +426,7 @@ def _log_recon(feature_map: dict[str, Any], target: Path, strict: bool, *, run_d
             warning(f"Unassigned audit-scope files: {len(unassigned)}")
         if recon.get("navigation_artifacts", {}).get("code_index") is None:
             info("Code-index navigation unavailable for multi-target Recon; inspect source directly")
-    _log_model_guidance(run_dir, "RECON")
+    _log_execution_guidance(run_dir, "RECON")
     if complete:
         success(f"{_stage_label('RECON')} complete")
     else:
@@ -467,7 +442,7 @@ def _log_routing(manifest: dict[str, Any], *, run_dir: Path | None = None) -> No
     info(f"Selected checks: {manifest['selected_count']}")
     info(f"Deferred checks: {manifest['deferred_count']}")
     info(f"Filtered checks: {manifest['filtered_count']}")
-    _log_model_guidance(run_dir, "ROUTING")
+    _log_execution_guidance(run_dir, "ROUTING")
     success(f"{_stage_label('ROUTING')} snapshot created")
 
 
@@ -475,7 +450,7 @@ def _log_domain_resolution(
     manifest: dict[str, Any], unresolved: set[str] | None = None, *, run_dir: Path | None = None
 ) -> None:
     _emit_stage("DOMAIN_RESOLUTION", "Resolving deferred protocol context")
-    _log_model_guidance(run_dir, "DOMAIN_RESOLUTION")
+    _log_execution_guidance(run_dir, "DOMAIN_RESOLUTION")
     total = len(manifest["deferred_domains"])
     remaining = unresolved if unresolved is not None else {entry["domain"] for entry in manifest["deferred_domains"]}
     info(f"Resolved: {total - len(remaining)} / {total}")
@@ -576,7 +551,7 @@ def _log_domain_context(
     manifest: dict[str, Any], unresolved: set[str] | None = None, *, run_dir: Path | None = None
 ) -> None:
     _emit_stage("DOMAIN_CONTEXT", "Resolving required protocol context")
-    _log_model_guidance(run_dir, "DOMAIN_CONTEXT")
+    _log_execution_guidance(run_dir, "DOMAIN_CONTEXT")
     total = _context_requirement_count(manifest)
     if unresolved is None:
         remaining = {
@@ -598,7 +573,7 @@ def _log_screen(screen: dict[str, Any], candidates: set[str], *, run_dir: Path |
     results = screen.get("results", [])
     total = len(results) if isinstance(results, list) else 0
     _emit_stage("SCREEN", "Triaging routed checks")
-    _log_model_guidance(run_dir, "SCREEN")
+    _log_execution_guidance(run_dir, "SCREEN")
     info(f"{_stage_label('SCREEN')} checks: {total}")
     info(f"{_stage_label('DEEP_REVIEW')} candidates: {len(candidates)}")
     info(f"{_stage_label('SCREEN')} NOT_APPLICABLE: {total - len(candidates)}")
@@ -619,7 +594,7 @@ def _log_report(state: dict[str, Any], *, finished: bool, run_dir: Path | None =
     confirmed = coverage.get("confirmed", []) if isinstance(coverage, dict) else []
     suspicious = coverage.get("suspicious", []) if isinstance(coverage, dict) else []
     _emit_stage("REPORT", "Preparing the final report")
-    _log_model_guidance(run_dir, "REPORT")
+    _log_execution_guidance(run_dir, "REPORT")
     info(f"Status: {state.get('status', 'UNKNOWN')}")
     info(f"Complete: {'yes' if state.get('complete') else 'no'}")
     info(f"Confirmed: {len(confirmed) if isinstance(confirmed, list) else 0}")
@@ -678,7 +653,7 @@ def _log_current_state(
             _log_domain_context(manifest, unresolved_context, run_dir=run_dir)
             return
         _emit_stage("SCREEN", "Triaging routed checks")
-        _log_model_guidance(run_dir, "SCREEN")
+        _log_execution_guidance(run_dir, "SCREEN")
         selected = coverage.get("selected", []) if isinstance(coverage, dict) else []
         candidates = coverage.get("deep_candidates", []) if isinstance(coverage, dict) else []
         not_applicable = coverage.get("screen_not_applicable", []) if isinstance(coverage, dict) else []
@@ -694,32 +669,21 @@ def _log_current_state(
         pending = set(candidates) - set(reviewed) if isinstance(candidates, list) and isinstance(reviewed, list) else set()
         if pending:
             _emit_stage("DEEP_REVIEW", "Auditing candidate paths")
-            _log_model_guidance(run_dir, "DEEP_REVIEW")
+            _log_execution_guidance(run_dir, "DEEP_REVIEW")
             info(f"Reviewed: {len(reviewed) if isinstance(reviewed, list) else 0} / {len(candidates) if isinstance(candidates, list) else 0}")
             info(f"Remaining: {len(pending)}")
         elif suspicious:
             _emit_stage("PROOF", "Validating suspicious findings")
-            _log_model_guidance(run_dir, "PROOF")
+            _log_execution_guidance(run_dir, "PROOF")
             info(f"Remaining proof items: {len(suspicious)}")
         else:
             _emit_stage("DEEP_REVIEW", "Auditing candidate paths")
-            _log_model_guidance(run_dir, "DEEP_REVIEW")
+            _log_execution_guidance(run_dir, "DEEP_REVIEW")
             info(f"Reviewed: {len(reviewed) if isinstance(reviewed, list) else 0} / {len(candidates) if isinstance(candidates, list) else 0}")
             info(f"Remaining: {len(candidates) - len(reviewed) if isinstance(candidates, list) and isinstance(reviewed, list) else 0}")
         warning("Further review is required")
         return
     _log_report(state, finished=True, run_dir=run_dir)
-
-
-def _init_model_profile(args: argparse.Namespace, run_dir: Path) -> None:
-    provider = getattr(args, "provider", "codex")
-    if args.model_profile:
-        profile = load_profile(args.model_profile.resolve())
-    elif args.accept_default_models:
-        profile = default_profile(provider)
-    else:
-        profile = load_global_profile(global_profile_path(provider)) or default_profile(provider)
-    write_profile(paths(run_dir)["model_profile"], profile)
 
 
 def _relocate_paths(value: Any, source: Path, target: Path) -> Any:
@@ -768,7 +732,6 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             sanitized_source = build_root
         staging = external / "staging"
         staging.mkdir()
-        _init_model_profile(args, staging)
         values = paths(staging)
         trust_artifact = {
             "artifact_type": "repository-trust",
@@ -892,7 +855,7 @@ def init_run(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         staging = None
         next_result = _relocate_paths(next_result, staged_run, run_dir)
         info(f"Next required phase: {_display_stage(next_result['stage'])}")
-        _log_model_guidance(run_dir, next_result["stage"])
+        _log_execution_guidance(run_dir, next_result["stage"])
         values = paths(run_dir)
         progress_history = [
             _progress_history_entry(
@@ -2049,7 +2012,7 @@ def status_run(
                 stage_name, state, manifest, resolution, domain_context
             ),
         ),
-        "recommended_execution": recommended_execution(run_dir, stage_name),
+        "recommended_execution": recommended_execution(stage_name),
         "location": _location_metadata(run_dir),
         "navigation": values["code_index_status"],
         "report_bundle": bundle_status,
@@ -2104,7 +2067,7 @@ def next_step(root: Path, run_dir: Path, *, verbose: bool = False, emit: bool = 
     if not values["domain_context"].exists():
         if emit:
             _emit_stage("DOMAIN_CONTEXT", "Resolving required protocol context")
-            _log_model_guidance(run_dir, "DOMAIN_CONTEXT")
+            _log_execution_guidance(run_dir, "DOMAIN_CONTEXT")
             info(f"Resolved: 0 / {_context_requirement_count(manifest)}")
             warning(f"{_stage_label('DOMAIN_CONTEXT')} template required")
         extra = []
@@ -2143,7 +2106,7 @@ def next_step(root: Path, run_dir: Path, *, verbose: bool = False, emit: bool = 
     if not values["screen_results"].exists():
         if emit:
             _emit_stage("SCREEN", "Triaging routed checks")
-            _log_model_guidance(run_dir, "SCREEN")
+            _log_execution_guidance(run_dir, "SCREEN")
             info(f"{_stage_label('SCREEN')} checks: {len(selected_entries(manifest, domain_resolution=resolution))}")
         extra = ["--domain-context", str(values["domain_context"]), "--screen-results-out", str(values["screen_results"])]
         if resolution is not None:
@@ -2168,7 +2131,7 @@ def next_step(root: Path, run_dir: Path, *, verbose: bool = False, emit: bool = 
     if candidates:
         if emit:
             _emit_stage("DEEP_REVIEW", "Auditing candidate paths")
-            _log_model_guidance(run_dir, "DEEP_REVIEW")
+            _log_execution_guidance(run_dir, "DEEP_REVIEW")
         deep_views: set[Path] = set()
         for owner in sorted({entry["owner_domain"] for entry in selected_entries(manifest, domain_resolution=resolution) if entry["canonical_id"] in candidates}):
             output, _ = _render_owner_view(
@@ -2225,7 +2188,7 @@ def next_step(root: Path, run_dir: Path, *, verbose: bool = False, emit: bool = 
             if emit:
                 success(f"{_stage_label('DEEP_REVIEW')} complete")
                 _emit_stage("PROOF", "Validating suspicious findings")
-                _log_model_guidance(run_dir, "PROOF")
+                _log_execution_guidance(run_dir, "PROOF")
                 info(f"Remaining proof items: {len(suspicious)}")
             return _stage_result(
                 run_dir,
@@ -2262,54 +2225,6 @@ def next_step(root: Path, run_dir: Path, *, verbose: bool = False, emit: bool = 
             result["pending_poc"] = policy.get("pending_ids", policy["required_ids"])
         result["required_inputs"] = required_inputs
     return result
-
-
-def models_run(
-    root: Path,
-    run_dir: Path | None,
-    *,
-    model_profile_path: Path | None = None,
-    reset_defaults: bool = False,
-    init_global: bool = False,
-    provider: str = "codex",
-) -> dict[str, Any]:
-    if init_global:
-        if run_dir is not None or model_profile_path is not None or reset_defaults:
-            raise ValueError("--init-global cannot be combined with run-scoped model options")
-        if provider not in PROVIDERS:
-            raise ValueError(f"unsupported provider {provider!r}; expected one of {', '.join(PROVIDERS)}")
-        profile = init_global_profile(global_profile_path(provider), provider)
-        return {
-            "stage": "MODELS",
-            "scope": "global",
-            "profile_path": str(global_profile_path(provider)),
-            "persisted": True,
-            "profile": profile,
-        }
-    if model_profile_path is not None and reset_defaults:
-        raise ValueError("--model-profile and --reset-defaults are mutually exclusive")
-    if run_dir is None:
-        raise ValueError("--run-dir is required unless --init-global is used")
-    run_dir = run_dir.resolve()
-    values, _, _ = _load_run(root, run_dir)
-    if model_profile_path is not None:
-        profile = load_profile(model_profile_path.resolve())
-        write_profile(values["model_profile"], profile)
-    elif reset_defaults:
-        current = load_profile(values["model_profile"]) if values["model_profile"].exists() else None
-        target_provider = current["provider"] if current is not None else provider
-        profile = default_profile(target_provider)
-        write_profile(values["model_profile"], profile)
-    elif values["model_profile"].exists():
-        profile = load_profile(values["model_profile"])
-    else:
-        profile = default_profile(provider)
-    return {
-        "stage": "MODELS",
-        "profile_path": str(values["model_profile"]),
-        "persisted": values["model_profile"].exists(),
-        "profile": profile,
-    }
 
 
 def prepare_report_publication(
@@ -3246,23 +3161,6 @@ def main(argv: list[str] | None = None) -> int:
     init.add_argument("--audit-timestamp")
     init.add_argument("--environment-context", type=Path)
     init.add_argument("--require-complete-compilation", action="store_true")
-    init.add_argument(
-        "--provider",
-        choices=PROVIDERS,
-        default="codex",
-        help="agent provider whose default/global model profile is used when no explicit profile is given",
-    )
-    model_options = init.add_mutually_exclusive_group()
-    model_options.add_argument(
-        "--accept-default-models",
-        action="store_true",
-        help="persist the canonical stage-model profile for the selected provider",
-    )
-    model_options.add_argument(
-        "--model-profile",
-        type=Path,
-        help="validate and persist a stage-model profile",
-    )
     _add_logging_flags(init)
 
     for name in ("next", "status"):
@@ -3296,35 +3194,6 @@ def main(argv: list[str] | None = None) -> int:
     reports_gc_mode.add_argument("--apply", action="store_true", help="remove verified cleanup candidates")
     _add_logging_flags(reports)
 
-    models = subparsers.add_parser("models")
-    models_output = models.add_mutually_exclusive_group()
-    models_output.add_argument("--output-dir", type=Path, help="initialized audit output root")
-    models_output.add_argument("--run-dir", type=Path, help="legacy alias for --output-dir")
-    models.add_argument("--root", type=Path, default=ROOT)
-    models.add_argument(
-        "--provider",
-        choices=PROVIDERS,
-        default="codex",
-        help="agent provider for --init-global and for runs without a persisted profile",
-    )
-    models.add_argument(
-        "--init-global",
-        action="store_true",
-        help="create the user-level profile for the selected provider if it does not exist",
-    )
-    model_options = models.add_mutually_exclusive_group()
-    model_options.add_argument(
-        "--reset-defaults",
-        action="store_true",
-        help="replace the run-scoped profile with the canonical defaults of its provider",
-    )
-    model_options.add_argument(
-        "--model-profile",
-        type=Path,
-        help="validate and replace the run-scoped profile",
-    )
-    _add_logging_flags(models)
-
     args = parser.parse_args(argv)
     configure(quiet=args.quiet, verbose=args.verbose)
     try:
@@ -3339,15 +3208,6 @@ def main(argv: list[str] | None = None) -> int:
             result = next_step(root, args.run_dir, verbose=args.verbose)
         elif args.command == "status":
             result = status_run(root, args.run_dir, include_execution=True)
-        elif args.command == "models":
-            result = models_run(
-                root,
-                args.run_dir,
-                model_profile_path=args.model_profile,
-                reset_defaults=args.reset_defaults,
-                init_global=args.init_global,
-                provider=args.provider,
-            )
         elif args.command == "verify-poc":
             result = verify_poc(root, args.run_dir, timeout=args.timeout)
         elif args.command == "reports":

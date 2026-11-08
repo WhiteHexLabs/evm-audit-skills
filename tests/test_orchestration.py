@@ -18,8 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from helpers import ROOT, build_manifest, load_json, suite_inputs
-from scripts.audit_run import MAX_CONCURRENT_WORKERS, main as audit_run_main
-from scripts.codex_model_profile import default_profile, write_profile
+from scripts.audit_run import MAX_CONCURRENT_WORKERS, STAGE_WORKER_AGENTS, main as audit_run_main
 from scripts.domain_shards import (
     merge_context,
     merge_screen,
@@ -40,14 +39,13 @@ SCOPE_EVIDENCE = [{"kind": "scope", "location": "fixture", "reason": "complete s
 
 class OrchestrationLifecycleTests(unittest.TestCase):
     def make_run(self, directory: Path) -> tuple[Path, dict[str, Any]]:
-        """Materialize a two-Domain run directory bound to a zcode profile."""
+        """Materialize a two-Domain run directory."""
         _, _, _, manifest = build_manifest(domains=DOMAINS)
         run_dir = directory / "run"
         (run_dir / "routing").mkdir(parents=True)
         (run_dir / "routing" / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
-        (run_dir / "config").mkdir()
         (run_dir / "context.json").write_text(
             json.dumps(
                 {**manifest["audit_context"], "routing_snapshot_id": manifest["routing_snapshot_id"]},
@@ -56,7 +54,6 @@ class OrchestrationLifecycleTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        write_profile(run_dir / "config/codex-model-profile.json", default_profile("zcode"))
         return run_dir, manifest
 
     def next_stage(self, run_dir: Path) -> dict[str, Any]:
@@ -75,11 +72,17 @@ class OrchestrationLifecycleTests(unittest.TestCase):
     ) -> None:
         self.assertEqual(result["stage"], stage)
         execution = result["recommended_execution"]
-        self.assertEqual(execution["provider"], "zcode")
         self.assertEqual(
-            execution.get("agent"),
+            execution,
+            {"agent": agent}
+            if agent is None
+            else {"agent": agent, "max_concurrent_workers": MAX_CONCURRENT_WORKERS},
+            f"{stage} handoff must name the shipped dispatch contract",
+        )
+        self.assertEqual(
+            STAGE_WORKER_AGENTS.get(stage),
             agent,
-            f"{stage} handoff must name the shipped worker contract",
+            f"{stage} must dispatch its shipped worker agent type",
         )
         # Dispatchable worker stages carry the bounded-queue slot contract;
         # controller stages never fan out and must not suggest a bound.

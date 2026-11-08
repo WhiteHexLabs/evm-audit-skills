@@ -11,7 +11,6 @@ SCHEMA_VERSIONS = {
     "code-context-benchmark": 2,
     "compilation-plan": 1,
     "code-index": 2,
-    "codex-model-profile": 4,
     "domain-context": 3,
     "domain-context-shard": 1,
     "domain-resolution": 2,
@@ -41,7 +40,6 @@ BENCHMARK_ROUTING_FIXTURE_VERSION = SCHEMA_VERSIONS["benchmark-routing-fixture"]
 CODE_CONTEXT_QUERY_VERSION = SCHEMA_VERSIONS["code-context-query"]
 CODE_CONTEXT_BENCHMARK_VERSION = SCHEMA_VERSIONS["code-context-benchmark"]
 CODE_INDEX_VERSION = SCHEMA_VERSIONS["code-index"]
-CODEX_MODEL_PROFILE_VERSION = SCHEMA_VERSIONS["codex-model-profile"]
 DOMAIN_CONTEXT_VERSION = SCHEMA_VERSIONS["domain-context"]
 DOMAIN_CONTEXT_SHARD_VERSION = SCHEMA_VERSIONS["domain-context-shard"]
 DOMAIN_RESOLUTION_VERSION = SCHEMA_VERSIONS["domain-resolution"]

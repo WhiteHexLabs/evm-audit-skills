@@ -206,8 +206,8 @@ fi
 
 if [ "$agent" = "zcode" ]; then
   for name in "${required_agents[@]}"; do
-    if ! grep -q "^model:" "$agents_root/$name.md"; then
-      echo "error: $agents_root/$name.md is missing its pinned model frontmatter" >&2
+    if grep -q "^model:" "$agents_root/$name.md"; then
+      echo "error: $agents_root/$name.md must not pin a model; every worker runs on the host default model" >&2
       exit 1
     fi
   done

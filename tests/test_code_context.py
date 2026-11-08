@@ -42,7 +42,6 @@ class CodeContextIntegrationTests(unittest.TestCase):
                     str(target_root),
                     "--domain",
                     "evm-audit-general",
-                    "--accept-default-models",
                 ],
                 cwd=ROOT,
                 capture_output=True,

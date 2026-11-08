@@ -44,30 +44,14 @@ https://github.com/owner/repo
 GitHub issue creation is opt-in. Ask the agent to file confirmed Medium+
 findings only when you explicitly want issue creation.
 
-## Stage Models
+## Model policy
 
-The default stage-model profile maximizes reasoning effort on every phase,
-with two provider vocabularies. Codex default:
-
-| Public phase | Default Codex model |
-| --- | --- |
-| Project Analysis | Luna · Max |
-| Context Analysis | Luna · Max |
-| Initial Review | Luna · Max |
-| Deep Audit | Luna · Max |
-| Vulnerability Validation | Luna · Max |
-| Final Report | Luna · Max |
-
-ZCode default: controller phases (Project Analysis, Domain Resolution, Final
-Report) run on the main agent (GLM-5.3 at max thought level, handoff
-recommendations only); Domain Context runs on `evm-audit-worker-flash`
-(GLM-5.3-Flash, unpinned/default — the model documents no explicit level);
-Initial Review and Deep Audit run on `evm-audit-worker-deep` (GLM-5.3, max);
-Vulnerability Validation runs on `evm-audit-worker-proof` (GLM-5.3, max).
-
-Use the defaults unless you explicitly customize the profile. It is confirmed
-once at audit startup. See the
-[Model Profile documentation](docs/codex-model-profile.md) for details.
+Every stage and every worker agent runs on the host's default model. The
+suite performs no stage-, agent-, or provider-level model or effort
+selection: worker agent templates pin no `model`/`thoughtLevel` frontmatter,
+and there is no per-run model profile artifact. To audit with a different
+model, change the host/session model itself; the pipeline behavior is
+otherwise identical.
 
 ## Parallel Orchestration
 
@@ -221,7 +205,6 @@ extend the repository.
 - [Architecture](docs/architecture.md)
 - [Audit Runtime](docs/audit-runtime.md)
 - [Project Analysis details](docs/recon-and-routing.md)
-- [Codex Model Profile](docs/codex-model-profile.md)
 - [Knowledge Evidence](docs/knowledge-evidence.md)
 - [Knowledge Lineage](docs/knowledge-lineage.md)
 

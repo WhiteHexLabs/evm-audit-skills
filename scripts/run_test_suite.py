@@ -57,7 +57,6 @@ FAST_MODULES = (
 
 CONTROLLER_MODULES = (
     "test_audit_run",
-    "test_codex_model_profile",
     "test_domain_shards",
     "test_hardening",
     "test_lifecycle",
@@ -101,7 +100,6 @@ CONTROLLER_REPORTING_PUBLICATION_NAMES = frozenset(
     }
 )
 CONTROLLER_LIFECYCLE_MODULES = (
-    "test_codex_model_profile",
     "test_domain_shards",
     "test_lifecycle",
     "test_observability",

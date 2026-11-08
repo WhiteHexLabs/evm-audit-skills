@@ -988,7 +988,10 @@ class AuditRunTests(unittest.TestCase):
             self.assertIn("DOMAIN_CONTEXT", result.stdout)
             self.assertEqual(
                 json.loads(result.stdout)["next"]["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
+                {
+                    "agent": "evm-audit-worker-flash",
+                    "max_concurrent_workers": audit_controller.MAX_CONCURRENT_WORKERS,
+                },
             )
             result = self.run_cli("scripts/audit_run.py", "next", "--run-dir", str(run_dir))
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -1029,10 +1032,7 @@ class AuditRunTests(unittest.TestCase):
             report_payload = json.loads(result.stdout)
             self.assertEqual(report_payload["progress"]["step"], 6)
             self.assertEqual(report_payload["progress"]["label"], "Final Report")
-            self.assertEqual(
-                report_payload["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
-            )
+            self.assertEqual(report_payload["recommended_execution"], {"agent": None})
             manifest = self.read(run_dir / "routing/manifest.json")
             state = self.read(run_dir / "audit-state.json")
             identity = {
@@ -1420,7 +1420,10 @@ class AuditRunTests(unittest.TestCase):
             self.assertIn("Deep Audit candidates remain", deep_payload["progress"]["summary"])
             self.assertEqual(
                 deep_payload["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
+                {
+                    "agent": "evm-audit-worker-deep",
+                    "max_concurrent_workers": audit_controller.MAX_CONCURRENT_WORKERS,
+                },
             )
             manifest = self.read(run_dir / "routing/manifest.json")
             route = next(item for item in manifest["selected"] if item["canonical_id"] == candidate["canonical_id"])
@@ -1522,7 +1525,10 @@ contract RetainedPoC {
             self.assertIn("DEEP_REVIEW", result.stdout)
             self.assertEqual(
                 json.loads(result.stdout)["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
+                {
+                    "agent": "evm-audit-worker-deep",
+                    "max_concurrent_workers": audit_controller.MAX_CONCURRENT_WORKERS,
+                },
             )
 
             manifest = self.read(run_dir / "routing/manifest.json")
@@ -1578,7 +1584,10 @@ contract RetainedPoC {
             self.assertEqual(proof_views[0].stat().st_mtime_ns, proof_mtime)
             self.assertEqual(
                 proof_payload["recommended_execution"],
-                {"provider": "codex", "model": "gpt-5.6-luna", "reasoning_effort": "max"},
+                {
+                    "agent": "evm-audit-worker-proof",
+                    "max_concurrent_workers": audit_controller.MAX_CONCURRENT_WORKERS,
+                },
             )
             resolved = {
                 **{key: value for key, value in suspicious.items() if key != "unresolved_reason"},
