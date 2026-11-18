@@ -80,8 +80,12 @@ jobs:
           python3 -m pip install --require-hashes -r requirements-runtime.lock
           solc-select install 0.8.24
           solc-select use 0.8.24
+      - name: Set up Foundry
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09
+        with:
+          version: v1.5.1
       - name: Run controller authoring shard
-        run: python3 scripts/run_controller_tests.py --shard reporting-authoring
+        run: FOUNDRY_SOLC="$(command -v solc)" python3 scripts/run_controller_tests.py --shard reporting-authoring
 
   controller-lifecycle:
     runs-on: ubuntu-latest
