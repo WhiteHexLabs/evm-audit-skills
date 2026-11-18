@@ -452,22 +452,21 @@ def fsync_parent_directory(path: Path) -> bool:
     return True
 
 
-# Windows raises PermissionError with these codes from os.replace when the
-# destination is held open by another handle (no FILE_SHARE_DELETE); POSIX
-# replaces succeed in the same situation. Retry only these, boundedly.
-_WINDOWS_SHARING_VIOLATIONS = frozenset({32, 33})  # ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+# A concurrent Windows rename can report ACCESS_DENIED as well as
+# SHARING_VIOLATION or LOCK_VIOLATION. ACCESS_DENIED can also be permanent.
+_WINDOWS_RETRYABLE_REPLACE_ERRORS = frozenset({5, 32, 33})
 ATOMIC_REPLACE_RETRY_SECONDS = 5.0
 ATOMIC_REPLACE_RETRY_INTERVAL = 0.05
 
 
 def _replace_boundedly(temporary: str, path: Path) -> None:
-    """os.replace with a bounded retry for Windows sharing violations.
+    """Retry Windows replacement conflicts within a fixed time budget.
 
     Concurrent processes may briefly hold the destination open (for example
     two report workers re-deriving ``audit-state.json`` outside the
     publication lock). The retry keeps each attempt a full atomic replace
-    and always propagates the original error once the budget is exhausted;
-    permission problems other than sharing violations fail immediately.
+    and propagates the OS error once the budget is exhausted. Other errors
+    fail immediately.
     """
     deadline = time.monotonic() + ATOMIC_REPLACE_RETRY_SECONDS
     while True:
@@ -475,7 +474,7 @@ def _replace_boundedly(temporary: str, path: Path) -> None:
             os.replace(temporary, path)
             return
         except PermissionError as error:
-            if getattr(error, "winerror", None) not in _WINDOWS_SHARING_VIOLATIONS:
+            if getattr(error, "winerror", None) not in _WINDOWS_RETRYABLE_REPLACE_ERRORS:
                 raise
             if time.monotonic() >= deadline:
                 raise

@@ -39,9 +39,9 @@ def write_json(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _sharing_violation() -> PermissionError:
-    error = PermissionError("simulated Windows sharing violation")
-    error.winerror = 32
+def _windows_replace_error(winerror: int) -> PermissionError:
+    error = PermissionError(errno.EACCES, "simulated Windows replace failure")
+    error.winerror = winerror
     return error
 
 
@@ -51,7 +51,7 @@ def _atomic_write_worker(path: str, value: dict, writes: int, result_queue) -> N
             atomic_write_json(Path(path), value)
         result_queue.put("ok")
     except BaseException as exc:  # pragma: no cover - asserted by the parent
-        result_queue.put(repr(exc))
+        result_queue.put(f"{type(exc).__name__}: {exc}")
 
 
 class HardeningTests(unittest.TestCase):
@@ -171,47 +171,47 @@ class HardeningTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "io"):
                     fsync_parent_directory(path)
 
-    def test_atomic_write_retries_windows_sharing_violations(self) -> None:
-        """A sharing-violation os.replace is retried and still lands atomically."""
+    def test_atomic_write_retries_transient_windows_replace_errors(self) -> None:
+        """Each retryable Windows error still allows an atomic write."""
         real_replace = os.replace
-        state = {"failures": 0}
+        for winerror in (5, 32, 33):
+            with self.subTest(winerror=winerror), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "artifact.json"
+                replace_error = _windows_replace_error(winerror)
 
-        def replace_with_transient_conflict(source, target):
-            state["failures"] += 1
-            if state["failures"] <= 2:
-                raise _sharing_violation()
-            return real_replace(source, target)
+                def replace_with_transient_conflict(source, target):
+                    if replace.call_count <= 2:
+                        raise replace_error
+                    return real_replace(source, target)
 
+                with patch("scripts.audit_artifacts.os.replace", side_effect=replace_with_transient_conflict) as replace:
+                    atomic_write_json(path, {"value": 1})
+                self.assertEqual(replace.call_count, 3)
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"value": 1})
+                self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_atomic_write_does_not_retry_generic_permission_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"
-            with patch("scripts.audit_artifacts.os.replace", side_effect=replace_with_transient_conflict):
-                atomic_write_json(path, {"value": 1})
-            self.assertEqual(state["failures"], 3)
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"value": 1})
-            self.assertEqual(
-                [item.name for item in path.parent.iterdir()],
-                [path.name],
-                "a successful retry must not leak temporary files",
-            )
-
-        # Permission problems that are not sharing violations fail immediately.
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "artifact.json"
-            with patch("scripts.audit_artifacts.os.replace", side_effect=PermissionError(13, "real permission problem")):
+            with patch("scripts.audit_artifacts.os.replace", side_effect=PermissionError(errno.EACCES, "real permission problem")) as replace:
                 with self.assertRaisesRegex(PermissionError, "real permission problem"):
                     atomic_write_json(path, {"value": 1})
-            self.assertEqual([item.name for item in path.parent.iterdir()], [], "a failed write must not leak temporary files")
+            replace.assert_called_once()
+            self.assertEqual(list(path.parent.iterdir()), [])
 
     def test_atomic_write_replace_retry_exhaustion_preserves_original_error(self) -> None:
-        """Exhausting the sharing-violation budget re-raises and cleans up."""
+        """Persistent access denial re-raises and leaves the previous artifact intact."""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "artifact.json"
             path.write_text("previous\n", encoding="utf-8")
-            with patch("scripts.audit_artifacts.os.replace", side_effect=_sharing_violation()), patch(
-                "scripts.audit_artifacts.ATOMIC_REPLACE_RETRY_SECONDS", 0.0
-            ), patch("scripts.audit_artifacts.ATOMIC_REPLACE_RETRY_INTERVAL", 0.0):
-                with self.assertRaisesRegex(PermissionError, "simulated Windows sharing violation"):
+            replace_error = _windows_replace_error(5)
+            with patch("scripts.audit_artifacts.os.replace", side_effect=replace_error) as replace, patch(
+                "scripts.audit_artifacts.time.monotonic", side_effect=(0.0, 0.0, 5.0)
+            ), patch("scripts.audit_artifacts.time.sleep"):
+                with self.assertRaises(PermissionError) as raised:
                     atomic_write_json(path, {"value": 1})
+            self.assertIs(raised.exception, replace_error)
+            self.assertEqual(replace.call_count, 2)
             self.assertEqual(
                 [item.name for item in path.parent.iterdir()],
                 [path.name],
@@ -222,7 +222,7 @@ class HardeningTests(unittest.TestCase):
     def test_concurrent_atomic_writes_never_corrupt_or_leak_temporaries(self) -> None:
         """Two processes replacing one artifact always leave a valid file.
 
-        On Windows this exercises the real sharing-violation retry path; on
+        On Windows this exercises the real replacement retry path; on
         POSIX it pins the same integrity invariant. Mirrors concurrent
         ``status_run`` callers re-deriving ``audit-state.json``.
         """
